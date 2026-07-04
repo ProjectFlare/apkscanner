@@ -1,0 +1,23 @@
+# Python environment and compilation artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+
+# Conda local files
+.conda/
+conda-meta/
+
+# OS-specific files
+.DS_Store
+
+# Project-specific target data blocks
+apks/
+reports/
+
+# Sphinx automated documentation output
+docs/build/
+docs/_build/
+
