@@ -86,4 +86,4 @@ uv run pytest
 uv run sphinx-build -b html docs/source docs/build/html
 ```
 
-The compiled HTML output will be located in [docs/build/html/index.html](docs/build/html/index.html).
+The compiled HTML output will be located at `docs/build/html/index.html`
