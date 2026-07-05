@@ -12,6 +12,14 @@ scanner.architecture module
    :undoc-members:
    :show-inheritance:
 
+scanner.bytecode\_audit module
+------------------------------
+
+.. automodule:: scanner.bytecode_audit
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 scanner.dependencies module
 ---------------------------
 
@@ -44,6 +52,14 @@ scanner.permissions module
    :undoc-members:
    :show-inheritance:
 
+scanner.rules module
+--------------------
+
+.. automodule:: scanner.rules
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 scanner.secrets module
 ----------------------
 
@@ -60,6 +76,14 @@ scanner.security\_checks module
    :undoc-members:
    :show-inheritance:
 
+scanner.signatures module
+-------------------------
+
+.. automodule:: scanner.signatures
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 scanner.split\_apks module
 --------------------------
 
@@ -68,10 +92,26 @@ scanner.split\_apks module
    :undoc-members:
    :show-inheritance:
 
+scanner.update\_rules module
+----------------------------
+
+.. automodule:: scanner.update_rules
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 scanner.urls module
 -------------------
 
 .. automodule:: scanner.urls
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+scanner.vulnerabilities module
+------------------------------
+
+.. automodule:: scanner.vulnerabilities
    :members:
    :undoc-members:
    :show-inheritance:

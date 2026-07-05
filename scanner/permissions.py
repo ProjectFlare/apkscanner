@@ -3,8 +3,8 @@
 
 from .rules import RUNTIME_PERMISSIONS
 
-def extract_permissions(apk):
-    """Extracts permissions from the APK object and classifies them into categories.
+def extract_permissions(apks):
+    """Extracts permissions from the APK objects and classifies them into categories.
 
     The categories are:
     - runtime_requested: Dangerous permissions requiring explicit runtime user approval.
@@ -12,7 +12,7 @@ def extract_permissions(apk):
     - custom_or_third_party: Custom permissions defined by the app or third-party SDKs.
 
     Args:
-        apk (androguard.core.apk.APK): The parsed APK object from Androguard.
+        apks (APK or list): A single parsed APK object or a list of split APK objects.
 
     Returns:
         dict: A dictionary containing lists of sorted permissions:
@@ -20,7 +20,15 @@ def extract_permissions(apk):
             - install_time_or_system (list[str]): List of install-time or system permissions.
             - custom_or_third_party (list[str]): List of custom/third-party permissions.
     """
-    raw_permissions = apk.get_permissions()
+    if not isinstance(apks, list):
+        apks = [apks]
+        
+    raw_permissions = set()
+    for apk in apks:
+        try:
+            raw_permissions.update(apk.get_permissions())
+        except Exception:
+            pass
     
     categorized = {
         "runtime_requested": [],

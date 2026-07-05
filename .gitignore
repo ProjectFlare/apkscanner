@@ -6,9 +6,9 @@ __pycache__/
 .pytest_cache/
 .coverage
 
-# Conda local files
-.conda/
-conda-meta/
+# uv managed virtual environment and cache
+.venv/
+.uv/
 
 # OS-specific files
 .DS_Store
@@ -20,4 +20,3 @@ reports/
 # Sphinx automated documentation output
 docs/build/
 docs/_build/
-

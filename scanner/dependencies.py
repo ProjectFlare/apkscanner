@@ -61,7 +61,8 @@ def extract_dependencies(apk, dx):
     and extracts library versions from packaging property files or the DEX string pool.
 
     Args:
-        apk (androguard.core.apk.APK): The parsed APK object.
+        apk (androguard.core.apk.APK or list[androguard.core.apk.APK]): The parsed APK object
+            or list of split APK objects.
         dx (androguard.core.analysis.analysis.Analysis): Multi-DEX analysis context.
 
     Returns:
@@ -70,13 +71,35 @@ def extract_dependencies(apk, dx):
             - exact_versions_found (dict): Classified library version mappings (system vs third_party).
     """
     raw_packages = set()
-    
+    apk_list = apk if isinstance(apk, (list, tuple)) else [apk]
+
+    # Dynamically retrieve base package name to ignore the app's own packages
+    package_name = None
+    for apk_obj in apk_list:
+        try:
+            pkg = apk_obj.get_package()
+            if pkg and isinstance(pkg, str):
+                package_name = pkg
+                break
+        except Exception:
+            pass
+
     # Namespaces to skip to avoid reporting basic system or runtime boilerplate libraries
-    ignore_prefixes = (
+    ignore_prefixes_list = [
         "Landroid/", "Landroidx/", "Ljava/", "Ljavax/", "Lkotlin/", 
         "Lkotlinx/", "Ldalvik/", "Llibcore/", "Lsun/", "Lorg/apache/", 
         "Lorg/xml/", "Lorg/w3c/", "Lorg/json/", "Lorg/intellij/", "Lorg/jetbrains/"
-    )
+    ]
+    if package_name:
+        pkg_slash = "L" + package_name.replace('.', '/') + "/"
+        ignore_prefixes_list.append(pkg_slash)
+        pkg_parts = package_name.split(".")
+        if len(pkg_parts) >= 3:
+            ignore_prefixes_list.append("L" + "/".join(pkg_parts[:3]) + "/")
+        elif len(pkg_parts) >= 2:
+            ignore_prefixes_list.append("L" + "/".join(pkg_parts[:2]) + "/")
+
+    ignore_prefixes = tuple(ignore_prefixes_list)
     
     # Extract only unique package path substrings to avoid processing 
     # redundant class strings in large multidex packages
@@ -136,28 +159,43 @@ def extract_dependencies(apk, dx):
     grouped_deps = {k: sorted(v) for k, v in grouped_deps.items()}
 
     versions = {}
-    # Iterate through build metadata files packaged inside META-INF/ directory to extract versions
-    for filename in apk.get_files():
-        if filename.startswith("META-INF/") and filename.endswith("pom.properties"):
-            try:
-                data = apk.get_file(filename).decode('utf-8', errors='ignore')
-                for line in data.splitlines():
-                    if line.startswith("version="):
-                        version = line.split("=")[1].strip()
-                        parts = filename.split("/")
-                        if len(parts) >= 4:
-                            versions[f"{parts[2]}:{parts[3]}"] = version
-            except Exception:
-                pass
-        # Read androidx/jetpack version descriptors
-        elif filename.startswith("META-INF/") and filename.endswith(".version"):
-            try:
-                lib_name = filename.split("/")[-1].replace(".version", "")
-                data = apk.get_file(filename).decode('utf-8', errors='ignore').strip()
-                if data:
-                    versions[lib_name] = data
-            except Exception:
-                pass
+    for apk_obj in apk_list:
+        # Iterate through build metadata files packaged inside each APK directory to extract versions
+        for filename in apk_obj.get_files():
+            if filename.startswith("META-INF/") and filename.endswith("pom.properties"):
+                try:
+                    data = apk_obj.get_file(filename).decode('utf-8', errors='ignore')
+                    for line in data.splitlines():
+                        if line.startswith("version="):
+                            version = line.split("=")[1].strip()
+                            parts = filename.split("/")
+                            if len(parts) >= 4:
+                                versions[f"{parts[2]}:{parts[3]}"] = version
+                except Exception:
+                    pass
+            # Read androidx/jetpack version descriptors
+            elif filename.startswith("META-INF/") and filename.endswith(".version"):
+                try:
+                    lib_name = filename.split("/")[-1].replace(".version", "")
+                    data = apk_obj.get_file(filename).decode('utf-8', errors='ignore').strip()
+                    if data:
+                        versions[lib_name] = data
+                except Exception:
+                    pass
+            # Read general properties files containing version information (e.g. play-services-*.properties)
+            elif filename.endswith(".properties") and not filename.startswith("META-INF/"):
+                try:
+                    lib_name = filename.split("/")[-1].replace(".properties", "")
+                    data = apk_obj.get_file(filename).decode('utf-8', errors='ignore')
+                    version = None
+                    for line in data.splitlines():
+                        if line.startswith("version="):
+                            version = line.split("=")[1].strip()
+                            break
+                    if version:
+                        versions[lib_name] = version
+                except Exception:
+                    pass
                 
     for string_val in dx.get_strings():
         val = string_val.get_value()

@@ -4,17 +4,14 @@ Guidance for AI coding agents working in this repository.
 
 ## Environment and Dependency Management
 
-You must operate strictly within the designated Conda environment and use the specified dependency management tools.
+You must operate strictly within the uv-managed virtual environment.
 
-- **Environment Activation:** Always ensure you are working within the activated environment:
-  `conda activate apk_scanner` (Running Python 3.12.13 under Conda 25.5.1)
-- **Dependency Modification:** Do not use raw `pip install` or `conda install` commands to add packages.
+- **Environment Activation:** The project uses uv to manage Python and dependencies. Always prefix commands with `uv run` or activate the environment with `source .venv/bin/activate`.
+  Example: `uv run pytest` (Running Python 3.12.13 via uv 0.11.26)
+- **Dependency Modification:** Do not use raw `pip install` commands to add packages.
 - **Dependency Workflow:**
-  1. Add the package name to `requirements.in`.
-  2. Generate/update the locked requirements file using:
-     `pip-compile --upgrade requirements.in`
-  3. Synchronize the local environment using:
-     `pip-sync`
+  1. Add the package name to the `dependencies` list in `pyproject.toml`.
+  2. Run `uv sync` to resolve, lock, and install the updated dependency tree.
 
 ## Execution and Directory Structure
 
@@ -22,7 +19,7 @@ The scanner operates on specific inputs and outputs. Do not alter this execution
 
 - **Input Location:** Split APK zip files are stored in the `./apks/` directory.
 - **Execution Command:** Run the scanner using the exact positional argument pattern:
-  `python main.py ./apks/<filename>.zip ./reports/<report_name>.json`
+  `uv run python main.py ./apks/<filename>.zip ./reports/<report_name>.json`
 - **Output Target:** Ensure reports are properly formatted as JSON and written to the specified path within `./reports/`.
 
 ## Core Logic and Static Analysis
@@ -40,4 +37,4 @@ The scanner operates on specific inputs and outputs. Do not alter this execution
 ## Testing and Verification
 
 - **Framework:** The project uses `pytest` for all unit and integration testing.
-- **Strict Verification Workflow:** 1. Write corresponding tests inside the `tests/` directory immediately after adding or modifying any module. 2. Run the test suite using `pytest` to verify the module works exactly as intended before declaring a task complete. 3. Do not break, weaken, or skip existing tests without human intervention.
+- **Strict Verification Workflow:** 1. Write corresponding tests inside the `tests/` directory immediately after adding or modifying any module. 2. Run the test suite using `uv run pytest` to verify the module works exactly as intended before declaring a task complete. 3. Do not break, weaken, or skip existing tests without human intervention.

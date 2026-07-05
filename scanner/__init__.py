@@ -10,6 +10,10 @@ from .architecture import analyze_ui_framework, analyze_cpu_architecture
 from .manifest import analyze_manifest_security
 from .security_checks import analyze_security_checks
 from .split_apks import parse_split_apks
+from .vulnerabilities import analyze_vulnerabilities
+from .update_rules import update_rules_db
+from .signatures import audit_signatures
+from .bytecode_audit import analyze_bytecode
 
 __all__ = [
     "extract_dependencies",
@@ -21,5 +25,9 @@ __all__ = [
     "analyze_cpu_architecture",
     "analyze_manifest_security",
     "analyze_security_checks",
-    "parse_split_apks"
+    "parse_split_apks",
+    "analyze_vulnerabilities",
+    "update_rules_db",
+    "audit_signatures",
+    "analyze_bytecode"
 ]

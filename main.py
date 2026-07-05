@@ -29,7 +29,11 @@ from scanner import (
     analyze_cpu_architecture,
     analyze_manifest_security,
     analyze_security_checks,
-    parse_split_apks
+    parse_split_apks,
+    analyze_vulnerabilities,
+    update_rules_db,
+    audit_signatures,
+    analyze_bytecode
 )
 
 # Standard logging configuration for command-line feedback
@@ -135,11 +139,17 @@ def scan_apk(target_path):
             found_urls = extract_urls(dx)
             package_name = apk.get_package()
             
-            # Audit AndroidManifest configuration flags and entrypoints
-            manifest_security = analyze_manifest_security(apk)
+            # Audit AndroidManifest configuration flags and entrypoints across all split APK objects
+            manifest_security = analyze_manifest_security(apk_objects)
             
             # Run security capabilities checks (root detection and allows static analysis)
             security_checks = analyze_security_checks(apk_objects, dx)
+            
+            # Audit developer certificates and signature schemes
+            signatures = audit_signatures(apk_objects)
+            
+            # Execute Dalvik bytecode analysis
+            bytecode_audit = analyze_bytecode(dx)
             
             # Assemble the structured report JSON
             report = {
@@ -163,9 +173,11 @@ def scan_apk(target_path):
                 },
                 "manifest_audit": manifest_security,
                 "security_checks": security_checks,
-                "permissions": extract_permissions(apk),
-                "dependencies": extract_dependencies(apk, dx),
-                "secrets": extract_secrets(dx),
+                "signatures": signatures,
+                "permissions": extract_permissions(apk_objects),
+                "dependencies": extract_dependencies(apk_objects, dx),
+                "secrets": extract_secrets(dx, apk_objects),
+                "bytecode_audit": bytecode_audit,
                 "network": {
                     "attributed_urls": found_urls,
                     "categorized_domains": extract_domains(found_urls)
@@ -174,6 +186,9 @@ def scan_apk(target_path):
             
             if split_apks_metadata:
                 report["apk_metadata"]["split_apks"] = split_apks_metadata
+                
+            # Perform OWASP Mobile Top 10 vulnerabilities mapping (including OSV.dev dependency lookup)
+            report["vulnerabilities"] = analyze_vulnerabilities(apk_objects, report)
             
             step_pbar.update(1)
             step_pbar.set_description("Scan complete")
@@ -190,9 +205,27 @@ def scan_apk(target_path):
 def main():
     """Main CLI entrypoint. Parses command line arguments and runs the scan."""
     parser = argparse.ArgumentParser(description="APK Scanner")
-    parser.add_argument("apk_path", help="Path to the target .apk or .zip file")
-    parser.add_argument("output_file", help="Path to save the JSON output report")
+    parser.add_argument("--update-rules", action="store_true", help="Update rules database from remote sources and exit")
+    parser.add_argument("apk_path", nargs="?", help="Path to the target .apk or .zip file")
+    parser.add_argument("output_file", nargs="?", help="Path to save the JSON output report")
     args = parser.parse_args()
+
+    # Handle update-rules command option
+    if args.update_rules:
+        db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scanner", "rules.db")
+        logging.info("Updating vulnerability rules database...")
+        success = update_rules_db(db_path)
+        if success:
+            logging.info("Vulnerability rules database successfully updated.")
+            sys.exit(0)
+        else:
+            logging.error("Failed to update vulnerability rules database.")
+            sys.exit(1)
+
+    # Validate positional arguments if not running rules updater
+    if not args.apk_path or not args.output_file:
+        parser.error("the following arguments are required: apk_path, output_file")
+        sys.exit(1)
 
     # Validate target file exists on disk
     if not os.path.isfile(args.apk_path):

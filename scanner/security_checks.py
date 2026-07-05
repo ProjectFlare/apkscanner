@@ -147,10 +147,12 @@ def analyze_security_checks(apks, dx):
             - details (dict): Metadata about identified packer or root indicators.
     """
     security_report = {
-        "rooted_device_detection": False,
-        "allows_static_analysis": True,
-        "details": {
-            "root_detection_indicators": [],
+        "rooted_device_detection": {
+            "detection_missing": True,
+            "indicators": []
+        },
+        "static_analysis": {
+            "analysis_blocked": False,
             "packer_detected": None
         }
     }
@@ -161,19 +163,19 @@ def analyze_security_checks(apks, dx):
     # 1. ROOTED DEVICE DETECTION CHECK
     root_indicators = _check_root_detection(dx)
     if root_indicators:
-        security_report["rooted_device_detection"] = True
-        security_report["details"]["root_detection_indicators"] = sorted(root_indicators)
+        security_report["rooted_device_detection"]["detection_missing"] = False
+        security_report["rooted_device_detection"]["indicators"] = sorted(root_indicators)
         
     # 2. ALLOWS STATIC ANALYSIS CHECK
     # Check if there are DEX files parsed successfully
     if not dx or not dx.get_classes():
-        security_report["allows_static_analysis"] = False
-        security_report["details"]["packer_detected"] = "No DEX files or classes could be parsed (empty or invalid APK)."
+        security_report["static_analysis"]["analysis_blocked"] = True
+        security_report["static_analysis"]["packer_detected"] = "No DEX files or classes could be parsed (empty or invalid APK)."
         return security_report
         
     detected_packer = _detect_packer(apks, dx)
     if detected_packer:
-        security_report["allows_static_analysis"] = False
-        security_report["details"]["packer_detected"] = detected_packer
+        security_report["static_analysis"]["analysis_blocked"] = True
+        security_report["static_analysis"]["packer_detected"] = detected_packer
         
     return security_report

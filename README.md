@@ -5,54 +5,85 @@ APK Scanner is a static analysis tool designed for parsing, auditing, and evalua
 ## Technical Blueprint for Reproduction
 
 ### Prerequisites
-* **Conda Version:** 25.5.1
-* **Python Version:** 3.12.13
+
+- **uv Version:** 0.11.26
+- **Python Version:** 3.12.13 (should be automatically managed by uv)
+
+Refer to the [official uv installation guide](https://docs.astral.sh/uv/getting-started/installation/) to install `uv` on your system.
 
 ### Environment Setup
-To initialize and synchronize the environment:
 
-1. Create the Conda environment with the required Python version:
-   ```bash
-   conda create -n apk_scanner python=3.12.13 -y
-   ```
-2. Activate the designated Conda environment:
-   ```bash
-   conda activate apk_scanner
-   ```
-3. Install `pip-tools` to enable dependency compilation and synchronization:
-   ```bash
-   pip install pip-tools
-   ```
-4. Synchronize the local environment packages using `pip-sync` (which locks dependencies to `requirements.txt`):
-   ```bash
-   pip-sync
-   ```
-
-*(Note: If you need to add packages, add them to `requirements.in` first, run `pip-compile requirements.in` to regenerate `requirements.txt`, and then run `pip-sync`.)*
-
-### Execution Contract
-To run the scanner on a target package (an APK or a split APK ZIP bundle), use the following positional argument pattern:
+uv manages the Python version and virtual environment automatically based on `.python-version` and `pyproject.toml`. To install all dependencies, run the following command in the **project root directory**:
 
 ```bash
-python main.py ./apks/<filename>.zip ./reports/<report_name>.json
+uv sync
+```
+
+This single command will:
+
+1. Download Python 3.12.13 if not already available.
+2. Create a `.venv/` virtual environment.
+3. Install all locked dependencies from `uv.lock`.
+
+### Dependency Management
+
+#### Adding a package
+
+Add the package to the `dependencies` list in `pyproject.toml`, then run:
+
+```bash
+uv sync
+```
+
+#### Upgrading all packages to latest compatible versions
+
+```bash
+uv lock --upgrade
+uv sync
+```
+
+### Execution Contract
+
+To run the scanner on a target package (an APK or a split APK ZIP bundle):
+
+```bash
+uv run python main.py ./apks/<filename>.zip ./reports/<report_name>.json
 ```
 
 Example:
+
 ```bash
-python main.py ./apks/de.vispiron.carsync.fahrtenbuch_3.6.20_apk.zip ./reports/de.vispiron.carsync.fahrtenbuch_3.6.20_apk_report.json
+uv run python main.py ./apks/de.vispiron.carsync.fahrtenbuch_3.6.20_apk.zip ./reports/de.vispiron.carsync.fahrtenbuch_3.6.20_apk_report.json
 ```
+
+### Rules Database Updates
+
+The scanner uses a compiled SQLite rules database (`scanner/rules.db`) for permissions categorization, domain classification, trusted library exclusions, and Maven Central mappings. To dynamically update the rules database from official upstream sources, run:
+
+```bash
+uv run python main.py --update-rules
+```
+
+#### Upstream Sources of Information
+
+- **Dangerous Permissions**: Fetched dynamically from the official **AOSP (Android Open Source Project) Manifest source repository** to categorize runtime permissions.
+- **Ad Trackers & Analytics**: Fetched dynamically from the **Exodus Privacy Trackers Database API** to obtain signature and token keywords for trackers classification.
+- **Threat Intelligence Domains**: Fetched dynamically from the **URLHaus Threat Blocklist** to identify active malware and phishing domain indicators.
+- **Trusted Library Prefixes**: Configured using standard JDK, Android Jetpack, Google GMS/Firebase, BouncyCastle, and Google Tink package namespaces to suppress boilerplate library noise in bytecode audits.
+- **Maven Mappings**: Maps loose dependency names to standard Maven coordinates to query the **OSV (Open Source Vulnerability) database** for public CVE vulnerability records.
 
 ### Documentation & Testing
 
 #### Running the Test Suite
-Trigger the test suite using `pytest` to execute all unit and integration tests:
+
 ```bash
-pytest
+uv run pytest
 ```
 
 #### Rebuilding the Sphinx Documentation
-Compile the automated Google-style and Sphinx-style docstring documentation into local HTML pages:
+
 ```bash
-sphinx-build -b html docs/source docs/build/html
+uv run sphinx-build -b html docs/source docs/build/html
 ```
+
 The compiled HTML output will be located in [docs/build/html/index.html](docs/build/html/index.html).

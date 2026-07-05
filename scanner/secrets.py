@@ -1,46 +1,87 @@
 # This module scans the DEX file string pool for potential secrets
 # using regular expressions for common keys, tokens, and credentials.
 
-import re
+from scanner.rules import SECRETS_PATTERNS
 
-# Pre-compiled patterns to avoid recompilation overhead inside loops.
-SECRETS_PATTERNS = {
-    "google_api": re.compile(r"AIza[0-9A-Za-z\-_]{35}"),
-    "aws_key": re.compile(r"AKIA[0-9A-Z]{16}"),
-    "slack_token": re.compile(r"xox[baprs]-[0-9a-zA-Z]{10,48}"),
-    "stripe_standard": re.compile(r"sk_live_[0-9a-zA-Z]{24}"),
-    "rsa_private_key": re.compile(r"-----BEGIN RSA PRIVATE KEY-----"),
-    "generic_api_key": re.compile(r"(?i)(?:api[-_]?key|secret[-_]?key|access[-_]?token)[=:]\s*[\"']?([a-z0-9\-_]{16,64})[\"']?"),
-    "jwt_token": re.compile(r"ey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")
-}
+def extract_secrets(dx, apks=None):
+    """Scans DEX strings, resource tables, and text assets for potential secrets.
 
-def extract_secrets(dx):
-    """Scans the DEX file string pool for secrets using predefined patterns.
-
-    Detects common credentials (e.g., Google API keys, AWS keys, JWT tokens, etc.) and
-    optimizes execution speed by using a length pre-filter.
+    Detects common credentials (e.g., Google API keys, AWS keys, JWT tokens, etc.)
+    and parses XML resource string files and raw assets line-by-line.
 
     Args:
         dx (androguard.core.analysis.analysis.Analysis): Analysis object containing class
             information and strings.
+        apks (APK or list, optional): A single parsed APK object or a list of split APK objects.
 
     Returns:
         list[dict[str, str]]: A list of dictionaries, each containing:
             - type (str): The identifier representing the secret pattern.
             - value (str): The secret string matching the pattern.
+            - pattern (str): The regex pattern used to detect the secret.
     """
     secrets = []
     
+    # 1. Scan DEX string pool
     for string_val in dx.get_strings():
         val = string_val.get_value()
-        
-        # Fast path check: if the string length is less than 16, skip regex search (minimum pattern length is 16)
         if len(val) < 16:
             continue
             
         for key, pattern in SECRETS_PATTERNS.items():
-            if pattern.search(val):
-                secrets.append({"type": key, "value": val})
+            match = pattern.search(val)
+            if match:
+                matched_val = match.group(1) if (match.groups() and match.group(1)) else match.group(0)
+                secrets.append({"type": key, "value": matched_val})
+                
+    # 2. Scan Resource Tables & Asset files if apks list is provided
+    if apks:
+        if not isinstance(apks, list):
+            apks = [apks]
+            
+        import xml.etree.ElementTree as ET
+        TEXT_EXTENSIONS = ('.json', '.properties', '.txt', '.conf', '.ini', '.yml', '.yaml', '.xml')
+        
+        for apk in apks:
+            # Parse Resource string table XML
+            try:
+                res = apk.get_android_resources()
+                if res:
+                    xml_data = res.get_strings_resources()
+                    if xml_data:
+                        root = ET.fromstring(xml_data)
+                        for elem in root.findall(".//string"):
+                            val = elem.text
+                            if val and len(val) >= 16:
+                                for key, pattern in SECRETS_PATTERNS.items():
+                                    match = pattern.search(val)
+                                    if match:
+                                        matched_val = match.group(1) if (match.groups() and match.group(1)) else match.group(0)
+                                        secrets.append({"type": key, "value": matched_val})
+            except Exception:
+                pass
+
+            # Scan raw assets and text resources
+            try:
+                for filename in apk.get_files():
+                    if filename.startswith(("assets/", "res/raw/", "res/xml/")):
+                        if filename.lower().endswith(TEXT_EXTENSIONS):
+                            try:
+                                raw_data = apk.get_file(filename)
+                                if raw_data and len(raw_data) < 1024 * 1024:  # Under 1MB
+                                    content = raw_data.decode('utf-8', errors='ignore')
+                                    for line in content.splitlines():
+                                        line = line.strip()
+                                        if len(line) >= 16:
+                                            for key, pattern in SECRETS_PATTERNS.items():
+                                                match = pattern.search(line)
+                                                if match:
+                                                    matched_val = match.group(1) if (match.groups() and match.group(1)) else match.group(0)
+                                                    secrets.append({"type": key, "value": matched_val})
+                            except Exception:
+                                pass
+            except Exception:
+                pass
                 
     unique_secrets = []
     seen = set()
