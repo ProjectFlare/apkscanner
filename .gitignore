@@ -20,3 +20,6 @@ reports/
 # Sphinx automated documentation output
 docs/build/
 docs/_build/
+
+# Docker config
+docker-compose.yml

@@ -8,6 +8,7 @@ Welcome to the APK Scanner's documentation!
    :caption: Contents:
 
    modules
+   main
 
 Indices and tables
 ==================

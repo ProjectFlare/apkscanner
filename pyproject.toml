@@ -10,6 +10,9 @@ dependencies = [
     "sphinx",
     "sphinx-rtd-theme",
     "requests",
+    "ruff",
+    "pytest-cov",
+    "sqlmodel",
 ]
 
 [build-system]
@@ -21,3 +24,22 @@ packages = ["scanner"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "A",   # flake8-builtins
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "RUF", # ruff-specific rules
+]
+ignore = ["E501"]
+

@@ -1,8 +1,7 @@
-Modules
+scanner
 =======
 
 .. toctree::
    :maxdepth: 4
 
-   main
    scanner

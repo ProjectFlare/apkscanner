@@ -1,13 +1,52 @@
-# Bytecode audit module for static APK security checking.
-# Performs semantic static audits on Dalvik executable bytecode (DEX) using Androguard XREFs.
+"""Bytecode audit module for static APK security checking.
+
+Performs semantic static audits on Dalvik executable bytecode (DEX) using Androguard XREFs to detect security concerns and vulnerabilities.
+"""
 
 import re
+
 from loguru import logger
 
-from scanner.rules import TRUSTED_PACKAGE_PREFIXES
+from scanner.util.rules import TRUSTED_PACKAGE_PREFIXES
 
 # Package prefixes of trusted libraries and SDKs to ignore during auditing
 IGNORE_PREFIXES = tuple(TRUSTED_PACKAGE_PREFIXES)
+
+
+def _is_verify_bypass(instructions) -> tuple[bool, str]:
+    """Checks if HostnameVerifier.verify returns true unconditionally.
+
+    Args:
+        instructions (list): Dalvik instructions of the method.
+
+    Returns:
+        tuple[bool, str]: A tuple of (is_bypass, reason).
+    """
+    has_const_one = False
+    for inst in instructions:
+        op = inst.get_name().lower()
+        out = inst.get_output().lower()
+        if "const" in op and "1" in out:
+            has_const_one = True
+        if "return" in op and has_const_one:
+            return True, "returns true unconditionally"
+    return False, ""
+
+
+def _is_trust_bypass(instructions) -> tuple[bool, str]:
+    """Checks if trust-manager implementation is an empty/no-op void check.
+
+    Args:
+        instructions (list): Dalvik instructions of the method.
+
+    Returns:
+        tuple[bool, str]: A tuple of (is_bypass, reason).
+    """
+    for inst in instructions:
+        if "return-void" in inst.get_name().lower():
+            return True, "contains empty/no-op implementation"
+    return False, ""
+
 
 def _audit_ssl_bypass(dx, report):
     """Audits bytecode for custom TrustManager or HostnameVerifier implementations that bypass SSL/TLS verification.
@@ -18,24 +57,20 @@ def _audit_ssl_bypass(dx, report):
     """
     ssl_interfaces = {
         "Ljavax/net/ssl/X509TrustManager;": ("checkClientTrusted", "checkServerTrusted"),
-        "Ljavax/net/ssl/HostnameVerifier;": ("verify",)
+        "Ljavax/net/ssl/HostnameVerifier;": ("verify",),
     }
 
     try:
         for cls in dx.get_classes():
             if cls.is_external() or cls.name.startswith(IGNORE_PREFIXES):
                 continue
-            
+
             vm_class = cls.get_vm_class()
             if not vm_class:
                 continue
 
             interfaces = vm_class.get_interfaces()
-            matched_interface = None
-            for interface in interfaces:
-                if interface in ssl_interfaces:
-                    matched_interface = interface
-                    break
+            matched_interface = next((interface for interface in interfaces if interface in ssl_interfaces), None)
 
             if not matched_interface:
                 continue
@@ -54,26 +89,11 @@ def _audit_ssl_bypass(dx, report):
 
                     is_bypass = False
                     reason = ""
-                    
+
                     if method_name == "verify" and inst_count <= 4:
-                        # Check if it returns true unconditionally (const/4 vx, 1 followed by return)
-                        has_const_one = False
-                        for inst in instructions:
-                            op = inst.get_name().lower()
-                            out = inst.get_output().lower()
-                            if "const" in op and "1" in out:
-                                has_const_one = True
-                            if "return" in op and has_const_one:
-                                is_bypass = True
-                                reason = "returns true unconditionally"
-                                break
+                        is_bypass, reason = _is_verify_bypass(instructions)
                     elif method_name in ("checkClientTrusted", "checkServerTrusted") and inst_count <= 2:
-                        # Empty implementation of void-returning checks (often just a return-void instruction)
-                        for inst in instructions:
-                            if "return-void" in inst.get_name().lower():
-                                is_bypass = True
-                                reason = "contains empty/no-op implementation"
-                                break
+                        is_bypass, reason = _is_trust_bypass(instructions)
 
                     if is_bypass:
                         class_name = cls.name.replace("/", ".").strip("L;")
@@ -82,7 +102,55 @@ def _audit_ssl_bypass(dx, report):
                         report["ssl_bypass_evidence"].append(evidence)
 
     except Exception as e:
-        logger.error(f"Error executing SSL bypass bytecode audit: {str(e)}")
+        logger.error(f"Error executing SSL bypass bytecode audit: {e!s}")
+
+
+def _collect_js_enabled_callers(dx, webview_settings_class) -> set:
+    """Collects classes that enable JavaScript on WebViews.
+
+    Args:
+        dx (androguard.core.analysis.analysis.Analysis): Multi-DEX analysis context.
+        webview_settings_class (str): WebView settings class identifier.
+
+    Returns:
+        set: A set of caller class names.
+    """
+    js_enabled_callers = set()
+    for method in dx.get_methods():
+        if method.class_name == webview_settings_class and method.name == "setJavaScriptEnabled":
+            xrefs = method.get_xref_from()
+            for xref in xrefs:
+                caller_class = xref[0].name
+                if not caller_class.startswith(IGNORE_PREFIXES):
+                    js_enabled_callers.add(caller_class)
+    return js_enabled_callers
+
+
+def _collect_file_access_callers(dx, webview_settings_class, dangerous_file_methods) -> dict:
+    """Collects classes and methods that invoke dangerous WebView file access methods.
+
+    Args:
+        dx (androguard.core.analysis.analysis.Analysis): Multi-DEX analysis context.
+        webview_settings_class (str): WebView settings class identifier.
+        dangerous_file_methods (set): Set of dangerous method names.
+
+    Returns:
+        dict: A dictionary mapping caller class names to lists of (method_name, caller_method).
+    """
+    file_access_callers = {}
+    for method in dx.get_methods():
+        if method.class_name == webview_settings_class and method.name in dangerous_file_methods:
+            method_name = method.name
+            xrefs = method.get_xref_from()
+            for xref in xrefs:
+                caller_class = xref[0].name
+                if caller_class.startswith(IGNORE_PREFIXES):
+                    continue
+                caller_method = xref[1].name
+                if caller_class not in file_access_callers:
+                    file_access_callers[caller_class] = []
+                file_access_callers[caller_class].append((method_name, caller_method))
+    return file_access_callers
 
 
 def _audit_unsafe_webviews(dx, report):
@@ -96,35 +164,13 @@ def _audit_unsafe_webviews(dx, report):
     dangerous_file_methods = {
         "setAllowFileAccess",
         "setAllowUniversalAccessFromFileURLs",
-        "setAllowFileAccessFromFileURLs"
+        "setAllowFileAccessFromFileURLs",
     }
 
     try:
         # Map method name to set of classes/methods invoking it
-        js_enabled_callers = set()
-        file_access_callers = {}
-
-        for method in dx.get_methods():
-            if method.class_name == webview_settings_class:
-                method_name = method.name
-                
-                if method_name == "setJavaScriptEnabled":
-                    xrefs = method.get_xref_from()
-                    for xref in xrefs:
-                        caller_class = xref[0].name
-                        if not caller_class.startswith(IGNORE_PREFIXES):
-                            js_enabled_callers.add(caller_class)
-                
-                elif method_name in dangerous_file_methods:
-                    xrefs = method.get_xref_from()
-                    for xref in xrefs:
-                        caller_class = xref[0].name
-                        if caller_class.startswith(IGNORE_PREFIXES):
-                            continue
-                        caller_method = xref[1].name
-                        if caller_class not in file_access_callers:
-                            file_access_callers[caller_class] = []
-                        file_access_callers[caller_class].append((method_name, caller_method))
+        js_enabled_callers = _collect_js_enabled_callers(dx, webview_settings_class)
+        file_access_callers = _collect_file_access_callers(dx, webview_settings_class, dangerous_file_methods)
 
         # Flag if a class enables JS and configures file access rules
         for class_name, methods in file_access_callers.items():
@@ -136,7 +182,7 @@ def _audit_unsafe_webviews(dx, report):
                     report["unsafe_webview_settings_evidence"].append(evidence)
 
     except Exception as e:
-        logger.error(f"Error executing Webview settings bytecode audit: {str(e)}")
+        logger.error(f"Error executing Webview settings bytecode audit: {e!s}")
 
 
 def _audit_insecure_cryptography(dx, report):
@@ -146,9 +192,7 @@ def _audit_insecure_cryptography(dx, report):
         dx (androguard.core.analysis.analysis.Analysis): Multi-DEX analysis context.
         report (dict): Target bytecode report dictionary to write findings to.
     """
-    insecure_modes = {
-        "AES/ECB/PKCS5Padding", "AES/ECB/NoPadding", "DES", "DESede"
-    }
+    insecure_modes = {"AES/ECB/PKCS5Padding", "AES/ECB/NoPadding", "DES", "DESede"}
 
     try:
         for string_val in dx.get_strings():
@@ -166,7 +210,30 @@ def _audit_insecure_cryptography(dx, report):
                     report["insecure_crypto_mode_evidence"].append(evidence)
 
     except Exception as e:
-        logger.error(f"Error executing insecure cryptography bytecode audit: {str(e)}")
+        logger.error(f"Error executing insecure cryptography bytecode audit: {e!s}")
+
+
+def _find_hardcoded_key_reference(dx, class_analysis, calling_method_name) -> str | None:
+    """Checks if the class analysis contains a static hardcoded key string referenced in the given calling method.
+
+    Args:
+        dx (androguard.core.analysis.analysis.Analysis): Androguard multi-DEX analysis context.
+        class_analysis (androguard.core.analysis.analysis.ClassAnalysis): Androguard class analysis.
+        calling_method_name (str): Name of the method referencing the SecretKeySpec constructor.
+
+    Returns:
+        str | None: The matched hardcoded string value if found, or None.
+    """
+    for string_ref in dx.get_strings():
+        for str_xref in string_ref.get_xref_from():
+            if str_xref[0] == class_analysis and str_xref[1].name == calling_method_name:
+                val = string_ref.get_value().strip()
+                # Key heuristic: minimum 16 characters for cryptographic keys, base64/hex characters.
+                # Avoid matching URLs, package names, file paths, or common class references (no dots or slashes).
+                if len(val) >= 16 and re.match(r"^[A-Za-z0-9+/=_-]+$", val):
+                    if "." not in val and "/" not in val and not val.startswith("android."):
+                        return val
+    return None
 
 
 def _audit_hardcoded_keys(dx, report):
@@ -187,29 +254,16 @@ def _audit_hardcoded_keys(dx, report):
                     if class_analysis.name.startswith(IGNORE_PREFIXES):
                         continue
                     method_analysis = xref[1]
-                    
-                    # Inspect string pool dependencies referenced in the same method
-                    has_static_string = False
-                    for string_ref in class_analysis.get_strings():
-                        # Verify if the string is referenced in the specific calling method
-                        for str_xref in string_ref.get_xref_from():
-                            if str_xref[1].name == method_analysis.name:
-                                val = string_ref.get_value().strip()
-                                # Common heuristic for hardcoded key entropy and format
-                                if len(val) >= 8 and re.match(r"^[A-Za-z0-9+/=_-]+$", val):
-                                    has_static_string = True
-                                    break
-                        if has_static_string:
-                            break
 
-                    if has_static_string:
+                    matched_key = _find_hardcoded_key_reference(dx, class_analysis, method_analysis.name)
+                    if matched_key:
                         clean_class = class_analysis.name.replace("/", ".").strip("L;")
-                        evidence = f"SecretKeySpec constructor called in class '{clean_class}' method '{method_analysis.name}' alongside a hardcoded string parameter."
+                        evidence = f"SecretKeySpec constructor called in class '{clean_class}' method '{method_analysis.name}' alongside a hardcoded string parameter: '{matched_key}'."
                         report["hardcoded_crypto_keys_detected"] = True
                         report["hardcoded_crypto_keys_evidence"].append(evidence)
 
     except Exception as e:
-        logger.error(f"Error executing hardcoded keys bytecode audit: {str(e)}")
+        logger.error(f"Error executing hardcoded keys bytecode audit: {e!s}")
 
 
 def _audit_dynamic_code_loading(dx, report):
@@ -219,10 +273,7 @@ def _audit_dynamic_code_loading(dx, report):
         dx (androguard.core.analysis.analysis.Analysis): Multi-DEX analysis context.
         report (dict): Target bytecode report dictionary to write findings to.
     """
-    dcl_classes = {
-        "Ldalvik/system/DexClassLoader;",
-        "Ldalvik/system/PathClassLoader;"
-    }
+    dcl_classes = {"Ldalvik/system/DexClassLoader;", "Ldalvik/system/PathClassLoader;"}
 
     try:
         for method in dx.get_methods():
@@ -240,7 +291,47 @@ def _audit_dynamic_code_loading(dx, report):
                     report["dynamic_code_loading_evidence"].append(evidence)
 
     except Exception as e:
-        logger.error(f"Error executing dynamic code loading bytecode audit: {str(e)}")
+        logger.error(f"Error executing dynamic code loading bytecode audit: {e!s}")
+
+
+def _collect_zip_entry_readers(dx, zip_entry_class) -> set:
+    """Collects class names that extract names from ZipEntry.
+
+    Args:
+        dx (androguard.core.analysis.analysis.Analysis): Multi-DEX analysis context.
+        zip_entry_class (str): ZipEntry class identifier.
+
+    Returns:
+        set: A set of caller class names.
+    """
+    entry_name_readers = set()
+    for method in dx.get_methods():
+        if method.class_name == zip_entry_class and method.name == "getName":
+            xrefs = method.get_xref_from()
+            for xref in xrefs:
+                caller_class = xref[0].name
+                if not caller_class.startswith(IGNORE_PREFIXES):
+                    entry_name_readers.add(caller_class)
+    return entry_name_readers
+
+
+def _has_path_traversal_check(dx, class_analysis) -> bool:
+    """Checks if a class has strings indicating path traversal checks.
+
+    Args:
+        dx (androguard.core.analysis.analysis.Analysis): Androguard multi-DEX analysis context.
+        class_analysis (androguard.core.analysis.analysis.ClassAnalysis): Androguard class analysis.
+
+    Returns:
+        bool: True if path traversal checks are detected in class strings, False otherwise.
+    """
+    for string_ref in dx.get_strings():
+        val = string_ref.get_value()
+        if ".." in val or "canonicalpath" in val.lower():
+            for str_xref in string_ref.get_xref_from():
+                if str_xref[0] == class_analysis:
+                    return True
+    return False
 
 
 def _audit_zip_slip(dx, report):
@@ -255,14 +346,7 @@ def _audit_zip_slip(dx, report):
 
     try:
         # Classes that extract names from zip entries
-        entry_name_readers = set()
-        for method in dx.get_methods():
-            if method.class_name == zip_entry and method.name == "getName":
-                xrefs = method.get_xref_from()
-                for xref in xrefs:
-                    caller_class = xref[0].name
-                    if not caller_class.startswith(IGNORE_PREFIXES):
-                        entry_name_readers.add(caller_class)
+        entry_name_readers = _collect_zip_entry_readers(dx, zip_entry)
 
         # Check if the same classes instantiate output file streams without path sanitization checks
         for method in dx.get_methods():
@@ -274,15 +358,7 @@ def _audit_zip_slip(dx, report):
                         continue
                     if caller_class in entry_name_readers:
                         class_anal = xref[0]
-                        # Look for strings associated with path traversal checks (like "..")
-                        has_traversal_check = False
-                        for string_ref in class_anal.get_strings():
-                            val = string_ref.get_value()
-                            if ".." in val or "canonicalpath" in val.lower():
-                                has_traversal_check = True
-                                break
-
-                        if not has_traversal_check:
+                        if not _has_path_traversal_check(dx, class_anal):
                             clean_class = class_anal.name.replace("/", ".").strip("L;")
                             caller_method = xref[1].name
                             evidence = f"Class '{clean_class}' method '{caller_method}' extracts ZipEntry paths and writes files without apparent traversal validations ('..')."
@@ -290,7 +366,7 @@ def _audit_zip_slip(dx, report):
                             report["zip_slip_evidence"].append(evidence)
 
     except Exception as e:
-        logger.error(f"Error executing Zip Slip bytecode audit: {str(e)}")
+        logger.error(f"Error executing Zip Slip bytecode audit: {e!s}")
 
 
 def analyze_bytecode(dx):
@@ -326,7 +402,7 @@ def analyze_bytecode(dx):
         "dynamic_code_loading_detected": False,
         "dynamic_code_loading_evidence": [],
         "zip_slip_detected": False,
-        "zip_slip_evidence": []
+        "zip_slip_evidence": [],
     }
 
     if not dx or not dx.get_classes():
