@@ -8,13 +8,14 @@ import os
 import shutil
 import tempfile
 import zipfile
+from collections.abc import Sequence
 
 from androguard.core.apk import APK
 from androguard.core.dex import DEX
 from loguru import logger
 
 
-def _extract_and_find_apks(zip_path, temp_dir):
+def _extract_and_find_apks(zip_path: str, temp_dir: str) -> list[str]:
     """Unzips the archive to a temp directory and returns paths of all .apk files.
 
     Args:
@@ -35,7 +36,7 @@ def _extract_and_find_apks(zip_path, temp_dir):
     return apk_files
 
 
-def _calculate_metadata_and_load(apk_files):
+def _calculate_metadata_and_load(apk_files: list[str]) -> tuple[list[tuple[str, APK]], list[dict]]:
     """Loads APKs and computes their sizes and SHA256 hashes.
 
     Args:
@@ -60,11 +61,11 @@ def _calculate_metadata_and_load(apk_files):
     return all_apks, split_apks_metadata
 
 
-def _find_base_apk(all_apks):
+def _find_base_apk(all_apks: Sequence[tuple[str, APK]]) -> tuple[APK, str]:
     """Identifies the base APK from a list of loaded APKs.
 
     Args:
-        all_apks (list[tuple[str, APK]]): Loaded APK objects.
+        all_apks (Sequence[tuple[str, APK]]): Loaded APK objects.
 
     Returns:
         tuple[APK, str]: The base APK and its filesystem path.
@@ -84,7 +85,7 @@ def _find_base_apk(all_apks):
     return all_apks[0][1], all_apks[0][0]
 
 
-def _extract_dex_files(all_apks):
+def _extract_dex_files(all_apks: Sequence[tuple[str, APK]]) -> list[DEX]:
     """Extracts all DEX files from a list of loaded APKs.
 
     Args:
@@ -106,7 +107,7 @@ def _extract_dex_files(all_apks):
     return dex_files
 
 
-def parse_split_apks(zip_path):
+def parse_split_apks(zip_path: str) -> tuple[APK, str, list[DEX], list[dict], list[APK], str]:
     """Unzips a split APK ZIP file, identifies base APK, and retrieves DEX files.
 
     Args:

@@ -3,7 +3,6 @@
 from unittest.mock import MagicMock
 
 from scanner.scan_modules.bytecode_audit import (
-    _find_hardcoded_key_reference,
     _has_path_traversal_check,
     _is_trust_bypass,
     _is_verify_bypass,
@@ -51,10 +50,10 @@ def test_analyze_bytecode_semantic_checks():
     result = analyze_bytecode(mock_dx)
 
     # Assertions
-    assert result["ssl_bypass_detected"] is True
-    assert any("com.example.MyTrustManager" in evidence for evidence in result["ssl_bypass_evidence"])
-    assert result["insecure_crypto_mode_detected"] is True
-    assert any("AES/ECB/PKCS5Padding" in evidence for evidence in result["insecure_crypto_mode_evidence"])
+    assert len(result["ssl_bypass"]) > 0
+    assert any("com.example.MyTrustManager" in evidence for evidence in result["ssl_bypass"])
+    assert len(result["insecure_crypto_mode"]) > 0
+    assert any("AES/ECB/PKCS5Padding" in evidence for evidence in result["insecure_crypto_mode"])
 
 
 def test_bytecode_audit_helpers():
@@ -77,22 +76,9 @@ def test_bytecode_audit_helpers():
     assert _is_trust_bypass([mock_inst_void]) == (True, "contains empty/no-op implementation")
     assert _is_trust_bypass([mock_inst_return]) == (False, "")
 
-    # Test _find_hardcoded_key_reference
-    mock_class_analysis = MagicMock()
-    mock_method_analysis = MagicMock()
-    mock_method_analysis.name = "someMethod"
-
-    mock_string_ref = MagicMock()
-    mock_string_ref.get_value.return_value = "secretkey12345678"
-    mock_string_ref.get_xref_from.return_value = [(mock_class_analysis, mock_method_analysis)]
-
-    mock_dx_internal = MagicMock()
-    mock_dx_internal.get_strings.return_value = [mock_string_ref]
-
-    assert _find_hardcoded_key_reference(mock_dx_internal, mock_class_analysis, "someMethod") == "secretkey12345678"
-    assert _find_hardcoded_key_reference(mock_dx_internal, mock_class_analysis, "otherMethod") is None
-
     # Test _has_path_traversal_check
+    mock_dx_internal = MagicMock()
+    mock_class_analysis = MagicMock()
     mock_string_traversal = MagicMock()
     mock_string_traversal.get_value.return_value = "../escaped"
     mock_string_traversal.get_xref_from.return_value = [(mock_class_analysis,)]
@@ -112,7 +98,6 @@ def test_bytecode_audit_coverage():
     """Verifies all security checks, fallback cases, and exceptions in bytecode_audit module."""
     from scanner.scan_modules.bytecode_audit import (
         _audit_dynamic_code_loading,
-        _audit_hardcoded_keys,
         _audit_insecure_cryptography,
         _audit_ssl_bypass,
         _audit_unsafe_webviews,
@@ -132,7 +117,7 @@ def test_bytecode_audit_coverage():
     # 2. Test SSL bypass exception path
     mock_dx_err = MagicMock()
     mock_dx_err.get_classes.side_effect = Exception("classes error")
-    report = {"ssl_bypass_detected": False, "ssl_bypass_evidence": []}
+    report = {"ssl_bypass": []}
     _audit_ssl_bypass(mock_dx_err, report)
 
     mock_cls_ext = MagicMock()
@@ -163,45 +148,43 @@ def test_bytecode_audit_coverage():
     mock_caller_method.name = "initWebView"
     mock_method_file.get_xref_from.return_value = [(mock_caller_class, mock_caller_method)]
 
-    mock_dx_web = MagicMock()
-    mock_dx_web.get_methods.return_value = [mock_method_js, mock_method_file]
+    mock_method_univ = MagicMock()
+    mock_method_univ.class_name = "Landroid/webkit/WebSettings;"
+    mock_method_univ.name = "setAllowUniversalAccessFromFileURLs"
+    mock_method_univ.get_xref_from.return_value = [(mock_caller_class, mock_caller_method)]
 
-    report_web = {"unsafe_webview_settings_detected": False, "unsafe_webview_settings_evidence": []}
+    mock_dx_web = MagicMock()
+    mock_dx_web.get_methods.return_value = [mock_method_js, mock_method_file, mock_method_univ]
+
+    report_web = {"unsafe_webview_settings": [], "permissive_webview_file_access": []}
     _audit_unsafe_webviews(mock_dx_web, report_web)
-    assert report_web["unsafe_webview_settings_detected"] is True
+    assert len(report_web["unsafe_webview_settings"]) > 0
+
+    # Test local-only file access goes to permissive_webview_file_access
+    mock_dx_web_local = MagicMock()
+    mock_caller_local = MagicMock()
+    mock_caller_local.name = "Lcom/example/LocalOnlyActivity;"
+    mock_method_js_local = MagicMock()
+    mock_method_js_local.class_name = "Landroid/webkit/WebSettings;"
+    mock_method_js_local.name = "setJavaScriptEnabled"
+    mock_method_js_local.get_xref_from.return_value = [(mock_caller_local,)]
+    mock_method_file_local = MagicMock()
+    mock_method_file_local.class_name = "Landroid/webkit/WebSettings;"
+    mock_method_file_local.name = "setAllowFileAccess"
+    mock_method_file_local.get_xref_from.return_value = [(mock_caller_local, mock_caller_method)]
+    mock_dx_web_local.get_methods.return_value = [mock_method_js_local, mock_method_file_local]
+    report_local = {"unsafe_webview_settings": [], "permissive_webview_file_access": []}
+    _audit_unsafe_webviews(mock_dx_web_local, report_local)
+    assert len(report_local["permissive_webview_file_access"]) > 0
+    assert len(report_local["unsafe_webview_settings"]) == 0
 
     # 4. Insecure cryptography exception path
     mock_dx_crypto_err = MagicMock()
     mock_dx_crypto_err.get_strings.side_effect = Exception("strings error")
-    report_crypto = {"insecure_crypto_mode_detected": False, "insecure_crypto_mode_evidence": []}
+    report_crypto = {"insecure_crypto_mode": []}
     _audit_insecure_cryptography(mock_dx_crypto_err, report_crypto)
 
-    # 5. Hardcoded keys audit
-    mock_method_spec = MagicMock()
-    mock_method_spec.class_name = "Ljavax/crypto/spec/SecretKeySpec;"
-    mock_method_spec.name = "<init>"
-
-    mock_class_anal = MagicMock()
-    mock_class_anal.name = "Lcom/example/KeyActivity;"
-
-    mock_method_anal = MagicMock()
-    mock_method_anal.name = "generate"
-
-    mock_method_spec.get_xref_from.return_value = [(mock_class_anal, mock_method_anal)]
-
-    mock_string_ref = MagicMock()
-    mock_string_ref.get_value.return_value = "c3VwZXJzZWNyZXRrZXk="
-    mock_string_ref.get_xref_from.return_value = [(mock_class_anal, mock_method_anal)]
-
-    mock_dx_keys = MagicMock()
-    mock_dx_keys.get_methods.return_value = [mock_method_spec]
-    mock_dx_keys.get_strings.return_value = [mock_string_ref]
-
-    report_keys = {"hardcoded_crypto_keys_detected": False, "hardcoded_crypto_keys_evidence": []}
-    _audit_hardcoded_keys(mock_dx_keys, report_keys)
-    assert report_keys["hardcoded_crypto_keys_detected"] is True
-
-    # 6. Dynamic Code Loading audit
+    # 5. Dynamic Code Loading audit
     mock_method_dcl = MagicMock()
     mock_method_dcl.class_name = "Ldalvik/system/DexClassLoader;"
     mock_method_dcl.name = "<init>"
@@ -210,9 +193,9 @@ def test_bytecode_audit_coverage():
     mock_dx_dcl = MagicMock()
     mock_dx_dcl.get_methods.return_value = [mock_method_dcl]
 
-    report_dcl = {"dynamic_code_loading_detected": False, "dynamic_code_loading_evidence": []}
+    report_dcl = {"dynamic_code_loading": []}
     _audit_dynamic_code_loading(mock_dx_dcl, report_dcl)
-    assert report_dcl["dynamic_code_loading_detected"] is True
+    assert len(report_dcl["dynamic_code_loading"]) > 0
 
     # 7. Zip Slip audit
     mock_method_zip = MagicMock()
@@ -229,21 +212,69 @@ def test_bytecode_audit_coverage():
     mock_dx_zip.get_methods.return_value = [mock_method_zip, mock_method_fos]
     mock_dx_zip.get_strings.return_value = []
 
-    report_zip = {"zip_slip_detected": False, "zip_slip_evidence": []}
+    report_zip = {"zip_slip": []}
     _audit_zip_slip(mock_dx_zip, report_zip)
-    assert report_zip["zip_slip_detected"] is True
+    assert len(report_zip["zip_slip"]) > 0
 
     assert analyze_bytecode(None) == {
-        "ssl_bypass_detected": False,
-        "ssl_bypass_evidence": [],
-        "unsafe_webview_settings_detected": False,
-        "unsafe_webview_settings_evidence": [],
-        "insecure_crypto_mode_detected": False,
-        "insecure_crypto_mode_evidence": [],
-        "hardcoded_crypto_keys_detected": False,
-        "hardcoded_crypto_keys_evidence": [],
-        "dynamic_code_loading_detected": False,
-        "dynamic_code_loading_evidence": [],
-        "zip_slip_detected": False,
-        "zip_slip_evidence": [],
+        "ssl_bypass": [],
+        "unsafe_webview_settings": [],
+        "permissive_webview_file_access": [],
+        "insecure_crypto_mode": [],
+        "unpadded_ecb_primitive": [],
+        "deprecated_cipher_algorithm": [],
+        "hardcoded_crypto_keys": [],
+        "dynamic_code_loading": [],
+        "zip_slip": [],
     }
+
+
+def test_audit_insecure_cryptography_des_and_unpadded_ecb():
+    """Verifies that DES is placed in deprecated_cipher_algorithm, NoPadding in unpadded_ecb_primitive, and PKCS5Padding in insecure_crypto_mode."""
+    from scanner.scan_modules.bytecode_audit import _audit_insecure_cryptography
+
+    mock_dx = MagicMock()
+
+    # DES string reference in NTLMEngine
+    mock_str_des = MagicMock()
+    mock_str_des.get_value.return_value = "DES"
+    mock_class_ntlm = MagicMock()
+    mock_class_ntlm.name = "Lcom/example/http/NTLMEngineImpl;"
+    mock_method_des = MagicMock()
+    mock_method_des.name = "createDESKey"
+    mock_str_des.get_xref_from.return_value = [(mock_class_ntlm, mock_method_des)]
+
+    # AES/ECB/NoPadding (single-block primitive)
+    mock_str_ecb_nopad = MagicMock()
+    mock_str_ecb_nopad.get_value.return_value = "AES/ECB/NoPadding"
+    mock_class_tink = MagicMock()
+    mock_class_tink.name = "Lcom/example/ObfuscatedClass;"
+    mock_method_ecb = MagicMock()
+    mock_method_ecb.name = "<init>"
+    mock_str_ecb_nopad.get_xref_from.return_value = [(mock_class_tink, mock_method_ecb)]
+
+    # AES/ECB/PKCS5Padding (insecure multi-block mode)
+    mock_str_pkcs5 = MagicMock()
+    mock_str_pkcs5.get_value.return_value = "AES/ECB/PKCS5Padding"
+    mock_class_app = MagicMock()
+    mock_class_app.name = "Lcom/example/app/SecretManager;"
+    mock_method_pkcs5 = MagicMock()
+    mock_method_pkcs5.name = "encrypt"
+    mock_str_pkcs5.get_xref_from.return_value = [(mock_class_app, mock_method_pkcs5)]
+
+    mock_dx.get_strings.return_value = [mock_str_des, mock_str_ecb_nopad, mock_str_pkcs5]
+
+    report = {"insecure_crypto_mode": [], "unpadded_ecb_primitive": [], "deprecated_cipher_algorithm": []}
+    _audit_insecure_cryptography(mock_dx, report)
+
+    # DES should be in deprecated_cipher_algorithm
+    assert len(report["deprecated_cipher_algorithm"]) == 1
+    assert "DES" in report["deprecated_cipher_algorithm"][0]
+
+    # AES/ECB/NoPadding should be in unpadded_ecb_primitive
+    assert len(report["unpadded_ecb_primitive"]) == 1
+    assert "AES/ECB/NoPadding" in report["unpadded_ecb_primitive"][0]
+
+    # AES/ECB/PKCS5Padding must be in insecure_crypto_mode
+    assert len(report["insecure_crypto_mode"]) == 1
+    assert "AES/ECB/PKCS5Padding" in report["insecure_crypto_mode"][0]

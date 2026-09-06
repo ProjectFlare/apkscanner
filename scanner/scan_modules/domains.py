@@ -3,45 +3,25 @@
 Classifies hostnames into categories such as cloud_services, trackers_and_ads, and others.
 """
 
-import os
-import re
 from urllib.parse import urlparse
 
-from loguru import logger
+from scanner.util.rules import CLOUD_KEYWORDS, SCHEMA_KEYWORDS, TRACKER_KEYWORDS, TRACKER_SIGNATURE_PATTERNS
 
-from scanner.util.rules import CLOUD_KEYWORDS, SCHEMA_KEYWORDS, TRACKER_KEYWORDS
-
-# Pre-compiled list of Exodus tracker network signature regexes
-TRACKER_SIGNATURE_PATTERNS = []
-
-db_path = os.path.join(os.path.dirname(__file__), "rules.db")
-if os.path.exists(db_path):
-    try:
-        import sqlite3
-
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-
-        # Check if table exists
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tracker_signatures'")
-        if cursor.fetchone() is not None:
-            cursor.execute(
-                "SELECT network_signature FROM tracker_signatures WHERE network_signature IS NOT NULL AND network_signature != ''"
-            )
-            for row in cursor.fetchall():
-                net_sig = row[0]
-                try:
-                    # Exodus patterns are often pipe-separated choices
-                    pattern = re.compile(f"(?:{net_sig})", re.IGNORECASE)
-                    TRACKER_SIGNATURE_PATTERNS.append(pattern)
-                except Exception:
-                    pass
-        conn.close()
-    except Exception as e:
-        logger.warning(f"Failed to load tracker signatures in domains.py: {e}")
+# Well-known tracker and telemetry domain substrings
+_WELL_KNOWN_TRACKERS: frozenset[str] = frozenset(
+    {
+        "doubleclick",
+        "googleadservices",
+        "googletagmanager",
+        "crashlytics",
+        "mixpanel",
+        "appsflyer",
+        "adjust",
+    }
+)
 
 
-def is_tracker_domain(domain):
+def is_tracker_domain(domain: str) -> bool:
     """Checks if a domain matches known tracker network signatures or keywords.
 
     Args:
@@ -58,6 +38,7 @@ def is_tracker_domain(domain):
     # 2. Match against fallback keywords, checking exact domain segments
     # to avoid false positives (e.g. keyword 'sync' matching 'carsync.de')
     segments = domain.split(".")
+    domain_lower = domain.lower()
     for kw in TRACKER_KEYWORDS:
         kw_lower = kw.lower()
         if len(kw_lower) <= 3:
@@ -68,22 +49,13 @@ def is_tracker_domain(domain):
             return True
 
         # Match specific well-known tracker substrings
-        well_known_trackers = {
-            "doubleclick",
-            "googleadservices",
-            "googletagmanager",
-            "crashlytics",
-            "mixpanel",
-            "appsflyer",
-            "adjust",
-        }
-        if kw_lower in well_known_trackers and kw_lower in domain.lower():
+        if kw_lower in _WELL_KNOWN_TRACKERS and kw_lower in domain_lower:
             return True
 
     return False
 
 
-def extract_domains(attributed_urls):
+def extract_domains(attributed_urls: dict[str, list[str]]) -> dict[str, list[str]]:
     """Extracts hostnames/domains from attributed URLs and groups them into categories.
 
     The categories are:
@@ -94,12 +66,12 @@ def extract_domains(attributed_urls):
     Any domains matching XML schema namespaces or generic test structures are excluded.
 
     Args:
-        attributed_urls (dict): Dictionary mapping owner library prefixes to a list of URLs.
+        attributed_urls (dict[str, list[str]]): Dictionary mapping owner library prefixes to a list of URLs.
 
     Returns:
-        dict: Categorized domains sorted alphabetically.
+        dict[str, list[str]]: Categorized domains sorted alphabetically.
     """
-    domains = set()
+    domains: set[str] = set()
 
     for url_list in attributed_urls.values():
         for url in url_list:
@@ -117,7 +89,7 @@ def extract_domains(attributed_urls):
             except Exception:
                 pass
 
-    categorized_domains = {"cloud_services": [], "trackers_and_ads": [], "other": []}
+    categorized_domains: dict[str, list[str]] = {"cloud_services": [], "trackers_and_ads": [], "other": []}
 
     for domain in sorted(domains):
         # Exclude internal schemas or dummy testing sites

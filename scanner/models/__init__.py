@@ -1,28 +1,56 @@
 """Database models package initialization.
 
-Exports the declarative SQLModel classes for tables in rules.db.
+Exports the declarative SQLModel classes for dynamic threat intelligence tables in rules.db.
 """
 
-from .rules_db import (
-    CloudKeyword,
+from scanner.models.ai_report import (
+    AppContextModel,
+    BaseReportModel,
+    DependenciesSectionModel,
+    DependencyItem,
+    FindingItem,
+    FindingsSectionModel,
+    InformationalItem,
+    InformationalSectionModel,
+    NetworkDomainItem,
+    NetworkSectionModel,
+    PermissionItem,
+    PermissionsSectionModel,
+    SecurityIncident,
+    SourceItem,
+    VulnerabilitiesSectionModel,
+    VulnerabilityFindingItem,
+    clean_code_snippet,
+    is_dummy_code_snippet,
+)
+from scanner.models.rules_db import (
     DangerousDomain,
-    MavenMapping,
     RuntimePermission,
-    SchemaKeyword,
-    SecretsPattern,
     TrackerKeyword,
     TrackerSignature,
-    TrustedPackagePrefix,
 )
 
 __all__ = [
-    "CloudKeyword",
+    "AppContextModel",
+    "BaseReportModel",
     "DangerousDomain",
-    "MavenMapping",
+    "DependenciesSectionModel",
+    "DependencyItem",
+    "FindingItem",
+    "FindingsSectionModel",
+    "InformationalItem",
+    "InformationalSectionModel",
+    "NetworkDomainItem",
+    "NetworkSectionModel",
+    "PermissionItem",
+    "PermissionsSectionModel",
     "RuntimePermission",
-    "SchemaKeyword",
-    "SecretsPattern",
+    "SecurityIncident",
+    "SourceItem",
     "TrackerKeyword",
     "TrackerSignature",
-    "TrustedPackagePrefix",
+    "VulnerabilitiesSectionModel",
+    "VulnerabilityFindingItem",
+    "clean_code_snippet",
+    "is_dummy_code_snippet",
 ]

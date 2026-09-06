@@ -61,9 +61,16 @@ def test_deobfuscator():
 
     # Report deobfuscation resolution
     report = {
-        "permissions": {"references": {"android.permission.ACCESS_COARSE_LOCATION": ["V4.d->onClick"]}},
+        "permissions": {
+            "references": {
+                "android.permission.ACCESS_COARSE_LOCATION": {
+                    "app_internal": ["V4.d->onClick"],
+                    "third_party": ["Og.o->decrypt"],
+                }
+            }
+        },
         "bytecode_audit": {
-            "insecure_crypto_mode_evidence": [
+            "insecure_crypto_mode": [
                 "Insecure crypto algorithm/mode 'AES/ECB/NoPadding' referenced in class 'B8.h' method 'b'."
             ]
         },
@@ -71,10 +78,13 @@ def test_deobfuscator():
 
     deobf.deobfuscate_report(report)
 
-    assert report["permissions"]["references"]["android.permission.ACCESS_COARSE_LOCATION"] == [
-        "V4.d [PickUpDetailsFragment | PickUpOrdersOverviewFragment]->onClick (calls LocationManager.isProviderEnabled)"
-    ]
-    assert report["bytecode_audit"]["insecure_crypto_mode_evidence"] == [
+    assert report["permissions"]["references"]["android.permission.ACCESS_COARSE_LOCATION"] == {
+        "app_internal": [
+            "V4.d [PickUpDetailsFragment | PickUpOrdersOverviewFragment]->onClick (calls LocationManager.isProviderEnabled)"
+        ],
+        "third_party": ["Og.o [com.google.crypto.tink]->decrypt"],
+    }
+    assert report["bytecode_audit"]["insecure_crypto_mode"] == [
         "Insecure crypto algorithm/mode 'AES/ECB/NoPadding' referenced in class 'B8.h [com.pslocks.blelocks | com.pslocks.sdk]' method 'b (calls Cipher.doFinal)'."
     ]
 
@@ -145,7 +155,29 @@ def test_deobfuscator_coverage():
     mock_dx.get_strings.return_value = [mock_string_pkg]
     assert "com.pslocks.some" in deobf.deobfuscate_class("LRootClass;")
 
-    # 7. deobfuscate_report edge cases
+    # 7. CamelCase component extraction and acronym handling
+    deobf.classifier.cache.clear()
+    mock_string_ibs = MagicMock()
+    mock_string_ibs.get_value.return_value = "ibS14SupportEmailProvider"
+    mock_string_ibs.get_xref_from.return_value = [(mock_class_root, None)]
+    mock_dx.get_strings.return_value = [mock_string_ibs]
+    assert "IBS14SupportEmailProvider" in deobf.deobfuscate_class("LRootClass;")
+
+    deobf.classifier.cache.clear()
+    mock_string_repo = MagicMock()
+    mock_string_repo.get_value.return_value = "userPreferencesRepository"
+    mock_string_repo.get_xref_from.return_value = [(mock_class_root, None)]
+    mock_dx.get_strings.return_value = [mock_string_repo]
+    assert "UserPreferencesRepository" in deobf.deobfuscate_class("LRootClass;")
+
+    deobf.classifier.cache.clear()
+    mock_string_verb = MagicMock()
+    mock_string_verb.get_value.return_value = "startActivity"
+    mock_string_verb.get_xref_from.return_value = [(mock_class_root, None)]
+    mock_dx.get_strings.return_value = [mock_string_verb]
+    assert deobf.deobfuscate_class("LRootClass;") == "LRootClass;"
+
+    # 8. deobfuscate_report edge cases
     report_no_perms = {}
     deobf.deobfuscate_report(report_no_perms)
 

@@ -17,7 +17,16 @@ from androguard.core.dex import DEX
 from loguru import logger
 from tqdm import tqdm
 
-from scanner import analyze_vulnerabilities, generate_ai_report, parse_split_apks, update_rules_db
+from scanner import (
+    analyze_security_posture,
+    analyze_vulnerabilities,
+    convert_markdown_file_to_pdf,
+    generate_ai_report,
+    generate_pdf_from_markdown,
+    parse_split_apks,
+    update_rules_db,
+)
+from scanner.util.ai_report import calculate_security_score, get_recommendation
 from scanner.util.json_report import apply_deobfuscation, build_scan_report
 
 
@@ -52,9 +61,8 @@ logger.add(
 class InterceptHandler(logging.Handler):
     """Routes stdlib ``logging`` calls through Loguru with optional verbose control.
 
-    Attributes:
-        verbose (bool): Class-level flag; when False, Androguard records below
-            ERROR and requests/urllib3 records below WARNING are silently dropped.
+    The class-level ``verbose`` flag controls filtering: when False, Androguard
+    records below ERROR and requests/urllib3 records below WARNING are silently dropped.
     """
 
     verbose = False
@@ -198,7 +206,13 @@ def scan_apk(target_path):
 
             apply_deobfuscation(report, dx, apk.get_package())
 
-            report["vulnerabilities"] = analyze_vulnerabilities(apk_objects, report)
+            report["vulnerabilities"] = analyze_vulnerabilities(report)
+            report["informational"] = analyze_security_posture(apk_objects, report)
+
+            score = calculate_security_score(report)
+            rec_plain, _ = get_recommendation(score, vulnerabilities_or_report=report)
+            report["scan_metadata"]["security_score"] = score
+            report["scan_metadata"]["recommendation"] = rec_plain
 
             step_pbar.update(1)
             step_pbar.set_description("Scan complete")
@@ -254,12 +268,38 @@ def _resolve_scraper_url(args):
 
 
 def _validate_args(parser, args):
-    """Validates positional arguments for scan and ai-only modes, exiting on error.
+    """Validates positional arguments for scan, ai-only, and pdf modes, exiting on error.
 
     Args:
         parser (argparse.ArgumentParser): The parser used for structured error reporting.
         args (argparse.Namespace): Parsed CLI arguments.
     """
+    # Standalone Markdown to PDF conversion mode
+    if isinstance(args.apk_path, str) and args.apk_path.endswith(".md"):
+        if not getattr(args, "pdf", False):
+            parser.error("to process a Markdown report, the --pdf flag is required.")
+        if not os.path.isfile(args.apk_path):
+            logging.error(f"Target Markdown report file not found: {args.apk_path}")
+            sys.exit(1)
+        return
+
+    if (args.openai_url or args.pdf) and args.ai_report is None:
+        args.ai_report = "default"
+
+    if args.ai_report == "default":
+        if args.ai_only and args.apk_path:
+            base, _ = os.path.splitext(args.apk_path)
+            args.ai_report = f"{base}_ai.md"
+        elif args.output_file:
+            base, _ = os.path.splitext(args.output_file)
+            args.ai_report = f"{base}_ai.md"
+        else:
+            args.ai_report = "ai_report.md"
+
+    if args.ai_report:
+        if not args.openai_url:
+            parser.error("when running with --ai-report, you must specify --openai-url.")
+
     if args.ai_only:
         if not args.apk_path or not args.ai_report:
             parser.error("when running with --ai-only, the JSON input path (apk_path) and --ai-report are required.")
@@ -277,12 +317,8 @@ def _validate_args(parser, args):
             sys.exit(1)
 
 
-def _handle_update_rules(args):
-    """Runs the rules-database update and exits with an appropriate status code.
-
-    Args:
-        args (argparse.Namespace): Parsed CLI arguments.
-    """
+def _handle_update_rules():
+    """Runs the rules-database update and exits with an appropriate status code."""
     db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scanner", "rules.db")
     logging.info("Updating vulnerability rules database...")
     if update_rules_db(db_path):
@@ -293,12 +329,11 @@ def _handle_update_rules(args):
         sys.exit(1)
 
 
-def _handle_ai_only(args, scraper_url):
+def _handle_ai_only(args):
     """Loads an existing JSON report, generates the AI report, and exits.
 
     Args:
         args (argparse.Namespace): Parsed CLI arguments.
-        scraper_url (str | None): Resolved scraper base URL (may be ``None``).
     """
     logging.info(f"Loading existing report: {args.apk_path}")
     try:
@@ -309,13 +344,27 @@ def _handle_ai_only(args, scraper_url):
         sys.exit(1)
 
     logging.info(f"Generating AI report utilizing '{args.ai_model}' from existing JSON...")
-    ai_report_content = generate_ai_report(
-        scan_report=report, model=args.ai_model, ollama_url=args.ollama_url, use_websearch=bool(scraper_url)
-    )
-    with open(args.ai_report, "w", encoding="utf-8") as f:
-        f.write(ai_report_content)
-    logging.info(f"AI report successfully exported to {args.ai_report}")
-    sys.exit(0)
+
+    try:
+        ai_report_content = generate_ai_report(
+            scan_report=report,
+            model=args.ai_model,
+            max_tool_iterations=args.max_tool_iterations,
+            openai_url=str(args.openai_url),
+            ai_report_path=args.ai_report,
+            concurrency=args.ai_concurrency,
+        )
+        with open(args.ai_report, "w", encoding="utf-8") as f:
+            f.write(ai_report_content)
+        logging.info(f"AI report successfully exported to {args.ai_report}")
+        if args.pdf:
+            pdf_path = f"{os.path.splitext(args.ai_report)[0]}.pdf"
+            generate_pdf_from_markdown(ai_report_content, pdf_path)
+            logging.info(f"AI PDF report successfully exported to {pdf_path}")
+        sys.exit(0)
+    except Exception as e:
+        logging.error(f"AI report generation failed: {e}")
+        sys.exit(1)
 
 
 def _save_report(report, output_file):
@@ -330,21 +379,34 @@ def _save_report(report, output_file):
     logging.info(f"Report successfully exported to {output_file}")
 
 
-def _write_ai_report(report, args, scraper_url):
+def _write_ai_report(report, args):
     """Generates and writes an AI security report to disk.
 
     Args:
         report (dict): The assembled scan report to analyse.
         args (argparse.Namespace): Parsed CLI arguments supplying model and output path.
-        scraper_url (str | None): Resolved scraper base URL (may be ``None``).
     """
     logging.info(f"Generating AI report utilizing '{args.ai_model}'...")
-    ai_report_content = generate_ai_report(
-        scan_report=report, model=args.ai_model, ollama_url=args.ollama_url, use_websearch=bool(scraper_url)
-    )
-    with open(args.ai_report, "w", encoding="utf-8") as f:
-        f.write(ai_report_content)
-    logging.info(f"AI report successfully exported to {args.ai_report}")
+
+    try:
+        ai_report_content = generate_ai_report(
+            scan_report=report,
+            model=args.ai_model,
+            max_tool_iterations=args.max_tool_iterations,
+            openai_url=str(args.openai_url),
+            ai_report_path=args.ai_report,
+            concurrency=args.ai_concurrency,
+        )
+        with open(args.ai_report, "w", encoding="utf-8") as f:
+            f.write(ai_report_content)
+        logging.info(f"AI report successfully exported to {args.ai_report}")
+        if args.pdf:
+            pdf_path = f"{os.path.splitext(args.ai_report)[0]}.pdf"
+            generate_pdf_from_markdown(ai_report_content, pdf_path)
+            logging.info(f"AI PDF report successfully exported to {pdf_path}")
+    except Exception as e:
+        logging.error(f"AI report generation failed: {e}")
+        sys.exit(1)
 
 
 def main():
@@ -357,15 +419,70 @@ def main():
         "apk_path", nargs="?", help="Path to target .apk or .zip, or existing JSON report (if --ai-only)"
     )
     parser.add_argument("output_file", nargs="?", help="Path to save JSON report (ignored if --ai-only)")
-    parser.add_argument("--ai-report", help="Path to save the Markdown AI security report")
-    parser.add_argument("--ai-model", default="deepseek-r1:14b", help="Ollama model to use for the AI report")
-    parser.add_argument("--ollama-url", default="http://127.0.0.1:11434", help="Ollama API URL")
+    parser.add_argument(
+        "--ai-report",
+        nargs="?",
+        const="default",
+        default=None,
+        help="Path to save the Markdown AI security report (optional, defaults to report name + _ai.md)",
+    )
+    parser.add_argument(
+        "--ai-model",
+        default="qwen3.6:35b",
+        help="Model identifier to request from the API server",
+    )
+    parser.add_argument(
+        "--openai-url",
+        default=None,
+        help="OpenAI-compatible API URL. Works with any server speaking that protocol, "
+        "local or hosted (Ollama: http://localhost:11434/v1, MLX: http://localhost:12345/v1).",
+    )
+    parser.add_argument(
+        "--ai-api-key",
+        default=None,
+        help="Bearer authentication token for OpenAI-compatible API endpoints",
+    )
+    parser.add_argument(
+        "--ai-request-timeout",
+        type=int,
+        default=900,
+        help="Timeout in seconds for agentic loop turns (default: 900)",
+    )
+    parser.add_argument(
+        "--ai-direct-request-timeout",
+        type=int,
+        default=300,
+        help="Timeout in seconds for direct LLM queries (default: 300)",
+    )
     parser.add_argument(
         "--scraper-url",
         help="Playwright scraper API URL (e.g. http://localhost:8000). Required for web searches; if omitted, web search is disabled.",
     )
     parser.add_argument(
         "--ai-only", action="store_true", help="Only generate the AI report using an existing JSON scan report"
+    )
+    parser.add_argument(
+        "--max-tool-iterations",
+        type=int,
+        default=7,
+        help="Maximum number of tool-call rounds the model may perform per report section (default: 7)",
+    )
+    parser.add_argument(
+        "--ai-concurrency",
+        type=int,
+        default=1,
+        help="Maximum number of concurrent section evaluations (default: 1)",
+    )
+    parser.add_argument(
+        "--disable-thinking",
+        action="store_true",
+        help="Ask the model to skip its reasoning phase. Much faster on local reasoning models that "
+        "would otherwise spend the whole completion budget deliberating.",
+    )
+    parser.add_argument(
+        "--pdf",
+        action="store_true",
+        help="Generate a companion PDF version of the AI security report (same name ending with .pdf)",
     )
     parser.add_argument(
         "--verbose", action="store_true", help="Show verbose output including third-party library logging"
@@ -375,19 +492,35 @@ def main():
 
     _configure_logging(args)
 
+    from scanner.util.tool_runner import set_api_key, set_request_timeouts, set_thinking_enabled
+
+    set_thinking_enabled(not args.disable_thinking)
+    set_api_key(args.ai_api_key)
+    set_request_timeouts(args.ai_request_timeout, args.ai_direct_request_timeout)
+
     scraper_url = _resolve_scraper_url(args)
     if scraper_url:
-        from scanner.util.scraper import set_scraper_url
+        from scanner.web.scraper import set_scraper_url
 
         set_scraper_url(scraper_url)
 
     if args.update_rules:
-        _handle_update_rules(args)
+        _handle_update_rules()
 
     _validate_args(parser, args)
 
+    if isinstance(args.apk_path, str) and args.apk_path.endswith(".md"):
+        logging.info(f"Converting Markdown report to PDF: {args.apk_path}")
+        try:
+            pdf_path = convert_markdown_file_to_pdf(args.apk_path)
+            logging.info(f"PDF report successfully exported to {pdf_path}")
+            sys.exit(0)
+        except Exception as e:
+            logging.error(f"Failed to convert Markdown report to PDF: {e}")
+            sys.exit(1)
+
     if args.ai_only:
-        _handle_ai_only(args, scraper_url)
+        _handle_ai_only(args)
 
     logging.info(f"Target initialized: {os.path.basename(args.apk_path)}")
 
@@ -396,7 +529,7 @@ def main():
     if report:
         _save_report(report, args.output_file)
         if args.ai_report:
-            _write_ai_report(report, args, scraper_url)
+            _write_ai_report(report, args)
     else:
         sys.exit(1)
 

@@ -14,8 +14,9 @@ from .scan_modules.secrets import extract_secrets
 from .scan_modules.security_checks import analyze_security_checks
 from .scan_modules.signatures import audit_signatures
 from .scan_modules.urls import extract_urls
-from .scan_modules.vulnerabilities import analyze_vulnerabilities
+from .scan_modules.vulnerabilities import analyze_security_posture, analyze_vulnerabilities
 from .util.ai_report import generate_ai_report
+from .util.pdf_report import convert_markdown_file_to_pdf, generate_pdf_from_markdown
 from .util.split_apks import parse_split_apks
 from .util.update_rules import update_rules_db
 
@@ -25,15 +26,18 @@ __all__ = [
     "analyze_cpu_architecture",
     "analyze_manifest_security",
     "analyze_security_checks",
+    "analyze_security_posture",
     "analyze_ui_framework",
     "analyze_vulnerabilities",
     "audit_signatures",
+    "convert_markdown_file_to_pdf",
     "extract_dependencies",
     "extract_domains",
     "extract_permissions",
     "extract_secrets",
     "extract_urls",
     "generate_ai_report",
+    "generate_pdf_from_markdown",
     "parse_split_apks",
     "update_rules_db",
 ]

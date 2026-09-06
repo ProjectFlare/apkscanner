@@ -203,7 +203,8 @@ def test_scan_apk_returns_report_on_success(monkeypatch, tmp_path):
     monkeypatch.setattr("main._build_analysis", lambda dex: mock_dx)
     monkeypatch.setattr("main.build_scan_report", lambda *a, **kw: dict(stub_report))
     monkeypatch.setattr("main.apply_deobfuscation", lambda r, dx, pkg: None)
-    monkeypatch.setattr("main.analyze_vulnerabilities", lambda apk_objects, r: [])
+    monkeypatch.setattr("main.analyze_vulnerabilities", lambda r: [])
+    monkeypatch.setattr("main.analyze_security_posture", lambda apk_objects, r: [])
     monkeypatch.setattr(
         "main.tqdm", MagicMock(return_value=MagicMock(__enter__=lambda s: s, __exit__=MagicMock(return_value=False)))
     )
@@ -269,7 +270,8 @@ def test_scan_apk_attaches_split_metadata(monkeypatch, tmp_path):
     monkeypatch.setattr("main._build_analysis", lambda dex: MagicMock())
     monkeypatch.setattr("main.build_scan_report", lambda *a, **kw: dict(stub_report))
     monkeypatch.setattr("main.apply_deobfuscation", lambda r, dx, pkg: None)
-    monkeypatch.setattr("main.analyze_vulnerabilities", lambda apk_objects, r: [])
+    monkeypatch.setattr("main.analyze_vulnerabilities", lambda r: [])
+    monkeypatch.setattr("main.analyze_security_posture", lambda apk_objects, r: [])
     monkeypatch.setattr(
         "main.tqdm", MagicMock(return_value=MagicMock(__enter__=lambda s: s, __exit__=MagicMock(return_value=False)))
     )
@@ -351,6 +353,9 @@ def test_validate_args_ai_only_missing_ai_report():
     args.ai_only = True
     args.apk_path = "/some/file.json"
     args.ai_report = None
+    # Without a backend URL the report path is not implicitly enabled, so the
+    # missing --ai-report is what must be reported.
+    args.openai_url = None
 
     with pytest.raises(SystemExit):
         _validate_args(parser, args)
@@ -404,11 +409,10 @@ def test_handle_update_rules_success(monkeypatch):
     """Verifies _handle_update_rules exits 0 when update succeeds."""
     monkeypatch.setattr("main.update_rules_db", lambda path: True)
 
-    args = MagicMock()
     with pytest.raises(SystemExit) as exc_info:
         from main import _handle_update_rules
 
-        _handle_update_rules(args)
+        _handle_update_rules()
     assert exc_info.value.code == 0
 
 
@@ -416,11 +420,10 @@ def test_handle_update_rules_failure(monkeypatch):
     """Verifies _handle_update_rules exits 1 when update fails."""
     monkeypatch.setattr("main.update_rules_db", lambda path: False)
 
-    args = MagicMock()
     with pytest.raises(SystemExit) as exc_info:
         from main import _handle_update_rules
 
-        _handle_update_rules(args)
+        _handle_update_rules()
     assert exc_info.value.code == 1
 
 
@@ -440,11 +443,11 @@ def test_handle_ai_only_success(monkeypatch, tmp_path):
     args = MagicMock()
     args.apk_path = str(json_file)
     args.ai_report = str(ai_out)
-    args.ai_model = "deepseek-r1:14b"
-    args.ollama_url = "http://127.0.0.1:11434"
+    args.ai_model = "qwen3.6:35b"
+    args.openai_url = "http://localhost:11434/v1"
 
     with pytest.raises(SystemExit) as exc_info:
-        _handle_ai_only(args, scraper_url=None)
+        _handle_ai_only(args)
 
     assert exc_info.value.code == 0
     assert ai_out.read_text() == "# AI Report"
@@ -462,7 +465,7 @@ def test_handle_ai_only_bad_json(tmp_path):
     args.ai_report = str(tmp_path / "out.md")
 
     with pytest.raises(SystemExit) as exc_info:
-        _handle_ai_only(args, scraper_url=None)
+        _handle_ai_only(args)
     assert exc_info.value.code == 1
 
 
@@ -489,10 +492,10 @@ def test_write_ai_report(monkeypatch, tmp_path):
     out_file = tmp_path / "ai_report.md"
     args = MagicMock()
     args.ai_report = str(out_file)
-    args.ai_model = "deepseek-r1:14b"
-    args.ollama_url = "http://127.0.0.1:11434"
+    args.ai_model = "qwen3.6:35b"
+    args.openai_url = "http://localhost:11434/v1"
 
-    _write_ai_report({}, args, scraper_url=None)
+    _write_ai_report({}, args)
 
     assert out_file.read_text() == "# Generated Report"
 
@@ -588,3 +591,96 @@ def test_main_with_ai_report(monkeypatch, tmp_path):
 
                             main_mod.main()
                             mock_ai.assert_called_once()
+
+
+def test_validate_args_ai_report_missing_urls():
+    """Verifies _validate_args raises error if --ai-report is set but both urls are missing."""
+    parser = MagicMock()
+    parser.error.side_effect = SystemExit(2)
+    args = MagicMock()
+    args.ai_report = "/out/ai.md"
+    args.openai_url = None
+
+    with pytest.raises(SystemExit):
+        _validate_args(parser, args)
+    parser.error.assert_called_once()
+
+
+def test_validate_args_ai_report_default_path(tmp_path):
+    """Verifies _validate_args resolves default AI report path correctly."""
+    parser = MagicMock()
+    args = MagicMock()
+    args.ai_report = "default"
+    args.ai_only = False
+    args.apk_path = str(tmp_path / "app.apk")
+    args.output_file = str(tmp_path / "report.json")
+    args.openai_url = "http://localhost:11434/v1"
+
+    # Write dummy file so it passes file checks
+    tmp_path.joinpath("app.apk").write_bytes(b"dummy")
+
+    _validate_args(parser, args)
+    assert args.ai_report == str(tmp_path / "report_ai.md")
+
+
+def test_validate_args_ai_report_implicit_enable(tmp_path):
+    """Verifies _validate_args implicitly sets ai_report path if a URL is provided."""
+    parser = MagicMock()
+    args = MagicMock()
+    args.ai_report = None
+    args.ai_only = False
+    args.apk_path = str(tmp_path / "app.apk")
+    args.output_file = str(tmp_path / "report.json")
+    args.openai_url = "http://openai"
+
+    # Write dummy file so it passes file checks
+    tmp_path.joinpath("app.apk").write_bytes(b"dummy")
+
+    _validate_args(parser, args)
+    assert args.ai_report == str(tmp_path / "report_ai.md")
+
+
+def test_main_cli_arguments_configuration(monkeypatch, tmp_path):
+    """Verifies main correctly sets api_key, request timeouts, and thinking flags."""
+    import scanner.util.tool_runner as tr
+
+    apk_file = tmp_path / "app.apk"
+    apk_file.write_bytes(b"dummy")
+    out_file = tmp_path / "report.json"
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            str(apk_file),
+            str(out_file),
+            "--ai-api-key",
+            "my-key",
+            "--ai-request-timeout",
+            "120",
+            "--ai-direct-request-timeout",
+            "45",
+            "--disable-thinking",
+        ],
+    )
+
+    stub_report = {"apk_metadata": {}, "scan_metadata": {}, "network": {}}
+
+    with mock_lib.patch("main._configure_logging"):
+        with mock_lib.patch("main._resolve_scraper_url", return_value=None):
+            with mock_lib.patch("main._validate_args"):
+                with mock_lib.patch("main.scan_apk", return_value=stub_report):
+                    with mock_lib.patch("main._save_report"):
+                        import main as main_mod
+
+                        main_mod.main()
+                        assert tr._AI_API_KEY == "my-key"
+                        assert tr.OPENAI_REQUEST_TIMEOUT == 120
+                        assert tr.OPENAI_DIRECT_REQUEST_TIMEOUT == 45
+                        assert tr._THINKING_ENABLED is False
+
+    # Cleanup
+    tr.set_api_key(None)
+    tr.set_request_timeouts(900, 300)
+    tr.set_thinking_enabled(True)

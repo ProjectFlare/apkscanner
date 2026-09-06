@@ -10,6 +10,7 @@ Subpackages
    scanner.models
    scanner.scan_modules
    scanner.util
+   scanner.web
 
 Module contents
 ---------------

@@ -14,25 +14,13 @@ from loguru import logger
 from sqlmodel import Session, SQLModel, create_engine
 
 from scanner.models import (
-    CloudKeyword,
     DangerousDomain,
-    MavenMapping,
     RuntimePermission,
-    SchemaKeyword,
-    SecretsPattern,
     TrackerKeyword,
     TrackerSignature,
-    TrustedPackagePrefix,
 )
-from scanner.util import scraper
-from scanner.util.rules import (
-    CLOUD_KEYWORDS,
-    IGNORED_TOKENS,
-    MAVEN_MAPPING,
-    SCHEMA_KEYWORDS,
-    SECRETS_PATTERNS,
-    TRUSTED_PACKAGE_PREFIXES,
-)
+from scanner.util.rules import IGNORED_TOKENS
+from scanner.web import scraper
 
 # Default URLs of trusted databases
 AOSP_MANIFEST_URL = (
@@ -104,7 +92,7 @@ def fetch_url_content(url: str, headers: dict | None = None) -> str:
             raise RuntimeError(f"Failed to fetch {url} directly: {e}") from e
 
 
-def fetch_dangerous_permissions():
+def fetch_dangerous_permissions() -> list[str]:
     """Fetches runtime/dangerous permissions from the official AOSP manifest.
 
     Returns:
@@ -147,7 +135,7 @@ def _extract_tokens_from_signature(signature: str) -> list[str]:
     return [t_low for t in tokens if (t_low := t.lower()) not in IGNORED_TOKENS and len(t_low) > 3]
 
 
-def fetch_exodus_trackers():
+def fetch_exodus_trackers() -> tuple[list[str], list[dict]]:
     """Fetches known Android tracker signatures from Exodus Privacy.
 
     Returns:
@@ -172,13 +160,13 @@ def fetch_exodus_trackers():
             code_sig = info.get("code_signature", "")
             net_sig = info.get("network_signature", "")
 
-            # Extract meaningful keywords from package/class/network signatures
+            # Extract meaningful keywords from package/class/network signatures. The code
+            # signature is tokenised for keywords but not stored: nothing reads it back, and
+            # tracker identification works off the network signature and these keywords.
             keywords.update(_extract_tokens_from_signature(code_sig))
             keywords.update(_extract_tokens_from_signature(net_sig))
 
-            signatures.append(
-                {"id": tracker_id, "name": name, "code_signature": code_sig, "network_signature": net_sig}
-            )
+            signatures.append({"id": tracker_id, "name": name, "network_signature": net_sig})
 
         return sorted(keywords), signatures
     except Exception as e:
@@ -186,7 +174,7 @@ def fetch_exodus_trackers():
         return [], []
 
 
-def fetch_urlhaus_domains():
+def fetch_urlhaus_domains() -> list[str]:
     """Fetches active malware and phishing domains from URLHaus blocklist.
 
     Returns:
@@ -215,8 +203,14 @@ def fetch_urlhaus_domains():
         return []
 
 
-def _populate_db_data(session: Session, perms, tracker_keywords, tracker_sigs, dangerous_domains) -> None:
-    """Populates the database tables with default, config, and scraped rules.
+def _populate_db_data(
+    session: Session,
+    perms: list[str],
+    tracker_keywords: list[str],
+    tracker_sigs: list[dict],
+    dangerous_domains: list[str],
+) -> None:
+    """Populates the database tables with scraped threat intelligence feeds.
 
     Args:
         session (Session): The SQLModel session.
@@ -225,54 +219,26 @@ def _populate_db_data(session: Session, perms, tracker_keywords, tracker_sigs, d
         tracker_sigs (list[dict]): List of tracker signatures.
         dangerous_domains (list[str]): List of dangerous domains.
     """
-    # Insert permissions
     for p in perms:
         session.add(RuntimePermission(name=p))
 
-    # Insert cloud keywords
-    for k in CLOUD_KEYWORDS:
-        session.add(CloudKeyword(keyword=k))
+    for k in tracker_keywords:
+        session.add(TrackerKeyword(keyword=k))
 
-    # Insert tracker keywords
-    if tracker_keywords:
-        for k in tracker_keywords:
-            session.add(TrackerKeyword(keyword=k))
-
-    # Insert tracker signatures
-    if tracker_sigs:
-        for s in tracker_sigs:
-            session.add(
-                TrackerSignature(
-                    id=s["id"],
-                    name=s["name"],
-                    code_signature=s["code_signature"],
-                    network_signature=s["network_signature"],
-                )
+    for s in tracker_sigs:
+        session.add(
+            TrackerSignature(
+                id=s["id"],
+                name=s["name"],
+                network_signature=s["network_signature"],
             )
+        )
 
-    # Insert schema keywords
-    for k in SCHEMA_KEYWORDS:
-        session.add(SchemaKeyword(keyword=k))
-
-    # Insert dangerous domains
-    if dangerous_domains:
-        for d in dangerous_domains:
-            session.add(DangerousDomain(domain=d))
-
-    # Insert trusted package prefixes
-    for p in TRUSTED_PACKAGE_PREFIXES:
-        session.add(TrustedPackagePrefix(prefix=p))
-
-    # Insert maven mappings
-    for k, v in MAVEN_MAPPING.items():
-        session.add(MavenMapping(lib_name=k, coordinate=v))
-
-    # Insert secrets patterns
-    for k, v in SECRETS_PATTERNS.items():
-        session.add(SecretsPattern(key=k, pattern=v.pattern))
+    for d in dangerous_domains:
+        session.add(DangerousDomain(domain=d))
 
 
-def update_rules_db(output_path):
+def update_rules_db(output_path: str) -> bool:
     """Executes the updates and saves compiled SQLite database via SQLModel.
 
     Args:
@@ -285,9 +251,17 @@ def update_rules_db(output_path):
     tracker_keywords, tracker_sigs = fetch_exodus_trackers()
     dangerous_domains = fetch_urlhaus_domains()
 
-    # Verify we got valid data from the sources, otherwise use local fallbacks
+    # Every source must have delivered data before the old database is deleted: rebuilding
+    # after a partial fetch failure would silently replace previously good tracker or domain
+    # tables with empty ones (all three feeds always carry entries, so empty means failure).
     if not perms:
-        logger.warning("Could not fetch permissions; updater will use existing defaults.")
+        logger.warning("Could not fetch permissions; keeping the existing rules database.")
+        return False
+    if not tracker_keywords or not tracker_sigs:
+        logger.warning("Could not fetch Exodus tracker data; keeping the existing rules database.")
+        return False
+    if not dangerous_domains:
+        logger.warning("Could not fetch URLHaus domains; keeping the existing rules database.")
         return False
 
     try:

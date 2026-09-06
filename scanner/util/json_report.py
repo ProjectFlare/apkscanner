@@ -10,10 +10,18 @@ import logging
 import os
 from datetime import UTC, datetime
 
+from androguard.core.analysis.analysis import Analysis
+from androguard.core.apk import APK
+
 from scanner.scan_modules.architecture import analyze_cpu_architecture, analyze_ui_framework
 from scanner.scan_modules.bytecode_audit import analyze_bytecode
 from scanner.scan_modules.deobfuscator import Deobfuscator
-from scanner.scan_modules.dependencies import extract_dependencies
+from scanner.scan_modules.dependencies import (
+    assemble_dependencies,
+    extract_dependencies,
+    flatten_for_osv,
+    resolve_latest_versions,
+)
 from scanner.scan_modules.domains import extract_domains
 from scanner.scan_modules.manifest import analyze_manifest_security
 from scanner.scan_modules.permissions import extract_permissions
@@ -21,9 +29,10 @@ from scanner.scan_modules.secrets import extract_secrets
 from scanner.scan_modules.security_checks import analyze_security_checks
 from scanner.scan_modules.signatures import audit_signatures
 from scanner.scan_modules.urls import extract_urls
+from scanner.scan_modules.vulnerabilities import check_dependencies_osv
 
 
-def calculate_hashes(filepath):
+def calculate_hashes(filepath: str) -> dict[str, str]:
     """Computes cryptographic hashes (SHA256, SHA1, MD5) for a given file.
 
     Args:
@@ -45,7 +54,13 @@ def calculate_hashes(filepath):
     return {"sha256": sha256.hexdigest(), "sha1": sha1.hexdigest(), "md5": md5.hexdigest()}
 
 
-def build_scan_report(apk, apk_objects, dx, target_path, scan_start):
+def build_scan_report(
+    apk: APK,
+    apk_objects: list[APK],
+    dx: Analysis,
+    target_path: str,
+    scan_start: datetime,
+) -> dict:
     """Executes all feature-extraction and security-analysis modules.
 
     Runs every scanner sub-module and assembles the results into the top-level
@@ -70,7 +85,7 @@ def build_scan_report(apk, apk_objects, dx, target_path, scan_start):
     except Exception:
         app_name = None
 
-    return {
+    report = {
         "scan_metadata": {
             "scan_started": scan_start.isoformat(),
             "scan_completed": scan_end.isoformat(),
@@ -95,7 +110,6 @@ def build_scan_report(apk, apk_objects, dx, target_path, scan_start):
         "manifest_audit": analyze_manifest_security(apk_objects),
         "security_checks": analyze_security_checks(apk_objects, dx),
         "permissions": extract_permissions(apk_objects, dx),
-        "dependencies": extract_dependencies(apk_objects, dx),
         "secrets": extract_secrets(dx, apk_objects),
         "bytecode_audit": analyze_bytecode(dx),
         "network": {
@@ -104,8 +118,18 @@ def build_scan_report(apk, apk_objects, dx, target_path, scan_start):
         },
     }
 
+    # Deterministic dependency intelligence is resolved once here, so the M2 supply-chain
+    # mapping and the AI dependencies audit reuse it instead of issuing their own
+    # per-dependency lookups: one batched OSV.dev query covering every pinned system and
+    # third-party version, plus the latest published version of each third-party artifact.
+    raw_deps = extract_dependencies(apk_objects, dx)
+    osv_hits = check_dependencies_osv(flatten_for_osv(raw_deps))
+    maven_latest = resolve_latest_versions(raw_deps.get("third_party", {}))
+    report["dependencies"] = assemble_dependencies(raw_deps, osv_hits, maven_latest)
+    return report
 
-def apply_deobfuscation(report, dx, package_name):
+
+def apply_deobfuscation(report: dict, dx: Analysis, package_name: str) -> None:
     """Runs heuristic deobfuscation over the assembled report in-place.
 
     Failures are logged as warnings and do not interrupt the scan.

@@ -17,6 +17,10 @@ __pycache__/
 apks/
 reports/
 
+# Generated SQLite database: rules.db is regenerable from remote feeds via
+# `python main.py --update-rules` (rules.py ships offline fallback defaults).
+scanner/rules.db
+
 # Sphinx automated documentation output
 docs/build/
 docs/_build/

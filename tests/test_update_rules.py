@@ -1,23 +1,19 @@
-"""Unit tests for the rules database updater module.
-
-Verifies page scraping, URL fetching, token/keyword extraction, and rules database generation
-using SQLModel ORM.
-"""
+"""Unit tests for the rules database updater module."""
 
 import os
-import unittest.mock as mock
+from unittest import mock
 
-import pytest
-import requests
 from sqlmodel import Session, create_engine, select
 
-import scanner.util.scraper as scraper
 from scanner.models import (
+    DangerousDomain,
     RuntimePermission,
+    TrackerKeyword,
     TrackerSignature,
 )
 from scanner.util.update_rules import (
     AOSP_MANIFEST_URL,
+    EXODUS_TRACKERS_URL,
     URLHAUS_DOMAINS_URL,
     _extract_text_from_html,
     _extract_tokens_from_signature,
@@ -31,141 +27,142 @@ from scanner.util.update_rules import (
 
 
 def test_extract_text_from_html():
-    """Verifies HTML extractor retrieves plain text content from different wrappers.
+    """Verifies extracting plain text from HTML, including pre and body tags."""
+    # Test <pre> extraction
+    html_pre = "<html><body><pre>Line 1\nLine 2 &amp; test</pre></body></html>"
+    assert _extract_text_from_html(html_pre) == "Line 1\nLine 2 & test"
 
-    Ensures that <pre> content is extracted, fallback body tag is parsed,
-    and fallback tags-stripping works, unescaping HTML entities correctly.
-    """
-    html_pre = '<html><body><pre style="white-space: pre;">Hello &amp; Welcome</pre></body></html>'
-    assert _extract_text_from_html(html_pre) == "Hello & Welcome"
+    # Test <body> fallback without <pre>
+    html_body = "<html><body><div>Hello <b>World</b></div></body></html>"
+    assert _extract_text_from_html(html_body) == "Hello World"
 
-    html_body = "<html><body><p>Hello</p> &lt;World&gt;</body></html>"
-    assert _extract_text_from_html(html_body) == "Hello <World>"
-
-    html_raw = "Plain text only"
-    assert _extract_text_from_html(html_raw) == "Plain text only"
-
-
-def test_extract_tokens_from_signature():
-    """Verifies that keywords are extracted from code/network signature strings.
-
-    Ensures ignored tokens and short tokens are discarded.
-    """
-    sig = "com.nonexistentcompany.helper.MyComponent"
-    tokens = _extract_tokens_from_signature(sig)
-    assert "nonexistentcompany" in tokens
-    assert "helper" in tokens
-    assert "mycomponent" in tokens
-    assert "com" not in tokens
-    assert "my" not in tokens
-
-    assert _extract_tokens_from_signature("") == []
+    # Test raw fallback without <body> or <pre>
+    html_raw = "<p>Plain &lt;text&gt;</p>"
+    assert _extract_text_from_html(html_raw) == "Plain <text>"
 
 
-def test_fetch_url_content_direct():
-    """Verifies fetch_url_content fetches text content directly when successful."""
-    mock_response = mock.MagicMock()
-    mock_response.text = "raw response text"
-    mock_response.status_code = 200
+def test_fetch_url_content_direct_success():
+    """Verifies direct HTTP request success."""
+    mock_resp = mock.MagicMock()
+    mock_resp.text = "Sample Content"
+    mock_resp.raise_for_status.return_value = None
 
-    with mock.patch("requests.get", return_value=mock_response) as mock_get:
-        content = fetch_url_content("https://example.com/test", headers={"User-Agent": "Test"})
-        assert content == "raw response text"
-        mock_get.assert_called_once_with("https://example.com/test", headers={"User-Agent": "Test"}, timeout=15)
+    with mock.patch("requests.get", return_value=mock_resp) as mock_get:
+        content = fetch_url_content("https://example.com/test")
+        assert content == "Sample Content"
+        mock_get.assert_called_once_with("https://example.com/test", headers=None, timeout=15)
 
 
 def test_fetch_url_content_scraper_fallback():
-    """Verifies fetch_url_content falls back to Playwright scraper API on failure.
-
-    Ensures that if the direct request fails and SCRAPER_URL is set, it attempts
-    to use the scraper API, converting the HTML wrapper successfully.
-    """
-    orig_url = scraper.SCRAPER_URL
-    scraper.SCRAPER_URL = "http://my-scraper.local"
-
-    try:
-        mock_requests_get = mock.MagicMock()
-        mock_requests_get.side_effect = requests.RequestException("CF block")
-
-        with mock.patch("requests.get", mock_requests_get):
-            with mock.patch(
-                "scanner.util.scraper.get_html", return_value="<html><body><pre>scraped data</pre></body></html>"
-            ) as mock_get_html:
-                content = fetch_url_content("https://example.com/test")
-                assert content == "scraped data"
-                mock_get_html.assert_called_once_with("https://example.com/test")
-
-        with mock.patch("requests.get", mock_requests_get):
-            with mock.patch("scanner.util.scraper.get_html", side_effect=RuntimeError("scraper down")):
-                with pytest.raises(RuntimeError, match="Failed to fetch"):
-                    fetch_url_content("https://example.com/test")
-    finally:
-        scraper.SCRAPER_URL = orig_url
+    """Verifies fallback to scraper API when direct request fails and scraper is configured."""
+    with mock.patch("requests.get", side_effect=Exception("Direct request timed out")):
+        with mock.patch("scanner.web.scraper.SCRAPER_URL", "http://localhost:8000"):
+            with mock.patch("scanner.web.scraper.get_html", return_value="<pre>Scraped Content</pre>") as mock_scraper:
+                content = fetch_url_content("https://example.com/fallback")
+                assert content == "Scraped Content"
+                mock_scraper.assert_called_once_with("https://example.com/fallback")
 
 
-def test_fetch_url_content_failure_no_scraper():
-    """Verifies fetch_url_content raises RuntimeError when direct request fails and no scraper is configured."""
-    orig_url = scraper.SCRAPER_URL
-    scraper.SCRAPER_URL = None
+def test_fetch_url_content_all_fail():
+    """Verifies RuntimeError when both direct request and scraper fallback fail."""
+    import pytest
 
-    try:
-        with mock.patch("requests.get", side_effect=requests.RequestException("Network error")):
-            with pytest.raises(RuntimeError, match="Failed to fetch"):
-                fetch_url_content("https://example.com/test")
-    finally:
-        scraper.SCRAPER_URL = orig_url
+    with mock.patch("requests.get", side_effect=Exception("Direct request failed")):
+        with mock.patch("scanner.web.scraper.SCRAPER_URL", "http://localhost:8000"):
+            with mock.patch("scanner.web.scraper.get_html", side_effect=Exception("Scraper API failed")):
+                with pytest.raises(RuntimeError, match=r"Failed to fetch .* via scraper"):
+                    fetch_url_content("https://example.com/fail")
+
+        # Test failure when scraper is not configured
+        with mock.patch("scanner.web.scraper.SCRAPER_URL", None):
+            with pytest.raises(RuntimeError, match=r"Failed to fetch https://example\.com/fail directly"):
+                fetch_url_content("https://example.com/fail")
 
 
-def test_fetch_dangerous_permissions():
-    """Verifies parsing of runtime permissions from the AOSP manifest."""
-    xml_data = """<?xml version="1.0" encoding="utf-8"?>
+def test_fetch_dangerous_permissions_success():
+    """Verifies parsing of dangerous permissions from AOSP manifest XML."""
+    manifest_xml = """<?xml version="1.0" encoding="utf-8"?>
     <manifest xmlns:android="http://schemas.android.com/apk/res/android">
         <permission android:name="android.permission.CAMERA" android:protectionLevel="dangerous" />
         <permission android:name="android.permission.INTERNET" android:protectionLevel="normal" />
-        <permission android:name="android.permission.READ_CONTACTS" android:protectionLevel="signature|dangerous" />
+        <permission android:name="android.permission.RECORD_AUDIO" android:protectionLevel="dangerous|instant" />
     </manifest>
     """
-    with mock.patch("scanner.util.update_rules.fetch_url_content", return_value=xml_data) as mock_fetch:
+    with mock.patch("scanner.util.update_rules.fetch_url_content", return_value=manifest_xml) as mock_fetch:
         perms = fetch_dangerous_permissions()
-        assert perms == ["android.permission.CAMERA", "android.permission.READ_CONTACTS"]
+        assert perms == ["android.permission.CAMERA", "android.permission.RECORD_AUDIO"]
         mock_fetch.assert_called_once_with(AOSP_MANIFEST_URL)
 
+
+def test_fetch_dangerous_permissions_failure():
+    """Verifies that an empty list is returned on exception."""
     with mock.patch("scanner.util.update_rules.fetch_url_content", side_effect=RuntimeError("fetch error")):
         perms = fetch_dangerous_permissions()
         assert perms == []
 
 
-def test_fetch_exodus_trackers():
-    """Verifies fetching and parsing of Exodus tracker signatures."""
-    json_data = """{
-        "trackers": {
-            "1": {
-                "name": "Google AdMob",
-                "code_signature": "com/google/android/gms/ads",
-                "network_signature": "googleads.g.doubleclick.net"
+def test_extract_tokens_from_signature():
+    """Verifies tokenization and stop-word filtering from signatures."""
+    assert _extract_tokens_from_signature("") == []
+
+    sig = "com.google.android.gms.ads.AdActivity;net.tracker.sdk"
+    # "com", "google", "android", "sdk" are in IGNORED_TOKENS, len <= 3 discarded
+    tokens = _extract_tokens_from_signature(sig)
+    assert "adactivity" in tokens
+    assert "tracker" in tokens
+    assert "google" not in tokens
+    assert "sdk" not in tokens
+
+
+def test_fetch_exodus_trackers_success():
+    """Verifies fetching and parsing tracker JSON from Exodus Privacy."""
+    import json
+
+    exodus_json = json.dumps(
+        {
+            "trackers": {
+                "1": {
+                    "name": "Google AdMob",
+                    "code_signature": "com.google.android.gms.ads",
+                    "network_signature": "googleads\\.g\\.doubleclick\\.net",
+                },
+                "2": {
+                    "name": "Custom Tracker",
+                    "code_signature": "io.custom.tracker",
+                    "network_signature": "",
+                },
             }
         }
-    }"""
-    with mock.patch("scanner.util.update_rules.fetch_url_content", return_value=json_data) as mock_fetch:
-        keywords, signatures = fetch_exodus_trackers()
-        assert "googleads" in keywords
-        assert "doubleclick" in keywords
-        assert len(signatures) == 1
-        assert signatures[0]["name"] == "Google AdMob"
-        mock_fetch.assert_called_once()
+    )
 
-    with mock.patch("scanner.util.update_rules.fetch_url_content", side_effect=RuntimeError("json fetch error")):
+    with mock.patch("scanner.util.update_rules.fetch_url_content", return_value=exodus_json) as mock_fetch:
+        keywords, signatures = fetch_exodus_trackers()
+
+        assert "custom" in keywords
+        assert "doubleclick" in keywords
+        assert len(signatures) == 2
+        assert signatures[0]["id"] == "1"
+        assert signatures[0]["name"] == "Google AdMob"
+        assert signatures[0]["network_signature"] == "googleads\\.g\\.doubleclick\\.net"
+        mock_fetch.assert_called_once_with(EXODUS_TRACKERS_URL, headers={"User-Agent": "APKScanner/1.0.0"})
+
+
+def test_fetch_exodus_trackers_failure():
+    """Verifies fallback on Exodus fetch exception."""
+    with mock.patch("scanner.util.update_rules.fetch_url_content", side_effect=RuntimeError("tracker error")):
         keywords, signatures = fetch_exodus_trackers()
         assert keywords == []
         assert signatures == []
 
 
 def test_fetch_urlhaus_domains():
-    """Verifies threat intelligence domains fetching and parsing from URLHaus."""
-    hostfile_data = """# URLHaus Hostlist
-    127.0.0.1   malicious.example.com
-    127.0.0.1   phishing.net
-    127.0.0.1   localhost
+    """Verifies parsing of domains from URLHaus hostfile format."""
+    hostfile_data = """
+    # URLhaus host file
+    # Last updated: 2026-01-01
+    127.0.0.1 localhost
+    127.0.0.1 malicious.example.com
+    0.0.0.0 phishing.net
     """
     with mock.patch("scanner.util.update_rules.fetch_url_content", return_value=hostfile_data) as mock_fetch:
         domains = fetch_urlhaus_domains()
@@ -186,7 +183,7 @@ def test_populate_db_data():
 
     perms = ["android.permission.CAMERA"]
     tracker_keywords = ["admob"]
-    tracker_sigs = [{"id": "1", "name": "AdMob", "code_signature": "com/admob", "network_signature": "admob.com"}]
+    tracker_sigs = [{"id": "1", "name": "AdMob", "network_signature": "admob.com"}]
     domains = ["malicious.org"]
 
     with Session(engine) as session:
@@ -202,6 +199,10 @@ def test_populate_db_data():
         assert tracker_sig_res is not None
         assert tracker_sig_res.name == "AdMob"
 
+        domain_res = session.exec(select(DangerousDomain)).first()
+        assert domain_res is not None
+        assert domain_res.domain == "malicious.org"
+
 
 def test_update_rules_db_success(tmp_path):
     """Verifies successful compilation and saving of the rules database.
@@ -212,7 +213,7 @@ def test_update_rules_db_success(tmp_path):
 
     mock_perms = ["android.permission.CAMERA"]
     mock_keywords = ["track"]
-    mock_sigs = [{"id": "1", "name": "Tracker", "code_signature": "sig", "network_signature": "netsig"}]
+    mock_sigs = [{"id": "1", "name": "Tracker", "network_signature": "netsig"}]
     mock_domains = ["evil.com"]
 
     with mock.patch("scanner.util.update_rules.fetch_dangerous_permissions", return_value=mock_perms):
@@ -229,6 +230,10 @@ def test_update_rules_db_success(tmp_path):
                     assert perm_res is not None
                     assert perm_res.name == "android.permission.CAMERA"
 
+                    tracker_res = session.exec(select(TrackerSignature)).first()
+                    assert tracker_res is not None
+                    assert tracker_res.name == "Tracker"
+
 
 def test_update_rules_db_fallback_missing_perms(tmp_path):
     """Verifies update_rules_db returns False when fetching permissions returns nothing."""
@@ -240,14 +245,68 @@ def test_update_rules_db_fallback_missing_perms(tmp_path):
         assert not os.path.exists(db_file)
 
 
-def test_update_rules_db_write_error():
-    """Verifies graceful handling of database connection or execution failures.
+def test_update_rules_db_aborts_on_partial_fetch_failure(tmp_path):
+    """A failed Exodus or URLHaus fetch must abort BEFORE the old database is deleted, so a
+    partial outage never silently replaces good tracker/domain tables with empty ones."""
+    db_file = tmp_path / "rules.db"
+    db_file.write_bytes(b"previous good database")
+    mock_perms = ["android.permission.CAMERA"]
 
-    Checks that update_rules_db catches database exceptions and logs the errors.
-    """
+    with mock.patch("scanner.util.update_rules.fetch_dangerous_permissions", return_value=mock_perms):
+        with mock.patch("scanner.util.update_rules.fetch_exodus_trackers", return_value=([], [])):
+            with mock.patch("scanner.util.update_rules.fetch_urlhaus_domains", return_value=["evil.com"]):
+                assert update_rules_db(str(db_file)) is False
+        with mock.patch(
+            "scanner.util.update_rules.fetch_exodus_trackers",
+            return_value=(["track"], [{"id": "1", "name": "T", "network_signature": "n"}]),
+        ):
+            with mock.patch("scanner.util.update_rules.fetch_urlhaus_domains", return_value=[]):
+                assert update_rules_db(str(db_file)) is False
+
+    # The previous database file must remain untouched after both aborted runs.
+    assert db_file.read_bytes() == b"previous good database"
+
+
+def test_load_dynamic_rules_overlays_threat_feeds(tmp_path):
+    """Dynamic threat feeds (permissions, trackers, dangerous domains) must overlay
+    the static defaults when rules.db is present."""
+    from sqlmodel import SQLModel
+
+    import scanner.util.rules as rules_mod
+    from scanner.models import DangerousDomain, RuntimePermission, TrackerSignature
+
+    db_file = tmp_path / "rules.db"
+    engine = create_engine(f"sqlite:///{db_file}")
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(RuntimePermission(name="android.permission.NEW_DYNAMIC_PERM"))
+        session.add(TrackerKeyword(keyword="dynamic_tracker"))
+        session.add(TrackerSignature(id="999", name="DynamicSig", network_signature=r"dynamic\.tracker\.com"))
+        session.add(DangerousDomain(domain="dynamic-malware.org"))
+        session.commit()
+
+    saved = {
+        "RUNTIME_PERMISSIONS": set(rules_mod.RUNTIME_PERMISSIONS),
+        "TRACKER_KEYWORDS": list(rules_mod.TRACKER_KEYWORDS),
+        "DANGEROUS_DOMAINS": set(rules_mod.DANGEROUS_DOMAINS),
+    }
+    try:
+        rules_mod.load_dynamic_rules(str(db_file))
+        assert "android.permission.NEW_DYNAMIC_PERM" in rules_mod.RUNTIME_PERMISSIONS
+        assert "dynamic_tracker" in rules_mod.TRACKER_KEYWORDS
+        assert "dynamic-malware.org" in rules_mod.DANGEROUS_DOMAINS
+        assert any(p.search("https://dynamic.tracker.com/endpoint") for p in rules_mod.TRACKER_SIGNATURE_PATTERNS)
+    finally:
+        rules_mod.RUNTIME_PERMISSIONS = saved["RUNTIME_PERMISSIONS"]
+        rules_mod.TRACKER_KEYWORDS = saved["TRACKER_KEYWORDS"]
+        rules_mod.DANGEROUS_DOMAINS = saved["DANGEROUS_DOMAINS"]
+
+
+def test_update_rules_db_write_error():
+    """Verifies graceful handling of database connection or execution failures."""
     mock_perms = ["android.permission.CAMERA"]
     mock_keywords = ["track"]
-    mock_sigs = [{"id": "1", "name": "Tracker", "code_signature": "sig", "network_signature": "netsig"}]
+    mock_sigs = [{"id": "1", "name": "Tracker", "network_signature": "netsig"}]
     mock_domains = ["evil.com"]
 
     with mock.patch("scanner.util.update_rules.fetch_dangerous_permissions", return_value=mock_perms):
@@ -264,7 +323,7 @@ def test_update_rules_db_remove_existing_fails(tmp_path):
 
     mock_perms = ["android.permission.CAMERA"]
     mock_keywords = ["track"]
-    mock_sigs = [{"id": "1", "name": "Tracker", "code_signature": "sig", "network_signature": "netsig"}]
+    mock_sigs = [{"id": "1", "name": "Tracker", "network_signature": "netsig"}]
     mock_domains = ["evil.com"]
 
     with mock.patch("scanner.util.update_rules.fetch_dangerous_permissions", return_value=mock_perms):
@@ -279,6 +338,9 @@ def test_update_rules_db_remove_existing_fails(tmp_path):
 def test_main_block():
     """Verifies that the main block executes without errors when imported/run."""
     import runpy
+    import warnings
 
-    with mock.patch("requests.get", side_effect=RuntimeError("mock network disabled")):
-        runpy.run_module("scanner.util.update_rules", run_name="__main__")
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*found in sys.modules.*")
+        with mock.patch("requests.get", side_effect=RuntimeError("mock network disabled")):
+            runpy.run_module("scanner.util.update_rules", run_name="__main__")

@@ -28,6 +28,7 @@ def test_audit_signatures():
     assert "v1" in result["scheme_versions"]
     assert "v2" in result["scheme_versions"]
     assert "v3" not in result["scheme_versions"]
+    assert result["v1_only_signature"] is False
     assert result["is_debug_signed"] is True
     assert result["has_weak_hash"] is False
     assert len(result["certificates"]) == 1
@@ -61,7 +62,6 @@ def test_split_signatures_alignment():
     mock_apk_split.filename = "split_config.apk"
 
     result_aligned = audit_signatures([mock_apk_base, mock_apk_split])
-    assert result_aligned["split_signatures_aligned"] is True
     assert len(result_aligned["mismatched_splits"]) == 0
 
     # Case 2: Base + split signed with different cert
@@ -73,7 +73,6 @@ def test_split_signatures_alignment():
     mock_apk_mismatch.filename = "split_mismatch.apk"
 
     result_mismatched = audit_signatures([mock_apk_base, mock_apk_mismatch])
-    assert result_mismatched["split_signatures_aligned"] is False
     assert "split_mismatch.apk (signature mismatch)" in result_mismatched["mismatched_splits"]
 
     # Case 3: Base + unsigned split
@@ -82,7 +81,6 @@ def test_split_signatures_alignment():
     mock_apk_unsigned.filename = "split_unsigned.apk"
 
     result_unsigned = audit_signatures([mock_apk_base, mock_apk_unsigned])
-    assert result_unsigned["split_signatures_aligned"] is False
     assert "split_unsigned.apk (unsigned)" in result_unsigned["mismatched_splits"]
 
 
@@ -173,8 +171,7 @@ def test_signature_helpers():
     mock_split_apk.is_signed.return_value = True
     mock_split_apk.get_certificates.return_value = []
 
-    aligned, mismatched = _audit_split_alignment([mock_base_apk_err, mock_split_apk], mock_base_apk_err)
-    assert aligned is False
+    mismatched = _audit_split_alignment([mock_base_apk_err, mock_split_apk], mock_base_apk_err)
     assert "split_1.apk (no certificates)" in mismatched
 
     # Test weak hash and debug signature paths
@@ -201,8 +198,7 @@ def test_signature_helpers():
     mock_split_except.is_signed.side_effect = Exception("failed read signature")
     mock_split_except.filename = "split_exception.apk"
 
-    aligned, mismatched = _audit_split_alignment([mock_base, mock_split_except], mock_base)
-    assert aligned is False
+    mismatched = _audit_split_alignment([mock_base, mock_split_except], mock_base)
     assert "split_exception.apk (failed to read signature: failed read signature)" in mismatched
 
     # Test audit_signatures with single APK (non-list input) and v3 signature scheme
@@ -213,8 +209,20 @@ def test_signature_helpers():
     mock_apk_single.get_certificates.return_value = []
     res_single = audit_signatures(mock_apk_single)
     assert "v3" in res_single["scheme_versions"]
+    assert res_single["v1_only_signature"] is False
     assert res_single["is_debug_signed"] is False
+
+    # An APK relying solely on the legacy v1 (JAR) scheme must be flagged (Janus exposure).
+    mock_apk_v1 = MagicMock()
+    mock_apk_v1.is_signed_v1.return_value = True
+    mock_apk_v1.is_signed_v2.return_value = False
+    mock_apk_v1.is_signed_v3.return_value = False
+    mock_apk_v1.get_certificates.return_value = []
+    res_v1 = audit_signatures(mock_apk_v1)
+    assert res_v1["scheme_versions"] == ["v1"]
+    assert res_v1["v1_only_signature"] is True
 
     # Test audit_signatures with empty list input
     res_empty = audit_signatures([])
     assert res_empty["scheme_versions"] == []
+    assert res_empty["v1_only_signature"] is False

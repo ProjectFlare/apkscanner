@@ -43,6 +43,7 @@ def test_manifest_cleartext_default():
     """Verifies usesCleartextTraffic defaults based on targetSdkVersion."""
     # Case 1: targetSdkVersion >= 28 -> default cleartext should be False
     mock_xml_1 = MagicMock()
+    mock_xml_1.attrib = {}
     mock_app_1 = MagicMock()
     mock_app_1.attrib = {}
     mock_xml_1.find.return_value = mock_app_1
@@ -56,6 +57,7 @@ def test_manifest_cleartext_default():
 
     # Case 2: targetSdkVersion < 28 -> default cleartext should be True
     mock_xml_2 = MagicMock()
+    mock_xml_2.attrib = {}
     mock_app_2 = MagicMock()
     mock_app_2.attrib = {}
     mock_xml_2.find.return_value = mock_app_2
@@ -302,3 +304,92 @@ def test_manifest_coverage_additional_branches():
     assert res_full["security_flags"]["network_security_config_missing"] is False
     assert res_full["security_flags"]["request_legacy_external_storage"] is True
     assert "network_security_config" in res_full
+
+
+def _make_split_apk(split_name, app_attrs="", target_sdk=None):
+    """Builds a mock APK object backed by a real manifest XML element.
+
+    Args:
+        split_name (str or None): Value of the manifest ``split`` attribute, or None
+            to model the base APK.
+        app_attrs (str): Extra attributes rendered onto the ``<application>`` element.
+        target_sdk (str or None): Value returned by ``get_target_sdk_version``.
+
+    Returns:
+        MagicMock: A mock APK exposing the constructed manifest.
+    """
+    split_attr = f'split="{split_name}"' if split_name else ""
+    xml_root = ET.fromstring(
+        f"""<manifest xmlns:android="http://schemas.android.com/apk/res/android" {split_attr}>
+            <application {app_attrs} />
+        </manifest>"""
+    )
+    apk = MagicMock()
+    apk.get_android_manifest_xml.return_value = xml_root
+    apk.get_target_sdk_version.return_value = target_sdk
+    apk.get_res_value.side_effect = lambda x: x
+    return apk
+
+
+def test_security_flags_read_from_base_apk_only():
+    """Stub config splits must not fabricate flags the base APK explicitly denies.
+
+    Regression test: config splits ship an <application> element without any security
+    attributes. Applying the Android platform defaults to those stubs and OR-ing the
+    result across splits previously overrode the base APK's explicit declarations,
+    reporting allowBackup/usesCleartextTraffic as enabled for every split APK.
+    """
+    base = _make_split_apk(
+        None,
+        app_attrs='android:allowBackup="false" android:extractNativeLibs="false"',
+        target_sdk="36",
+    )
+    splits = [
+        _make_split_apk("config.arm64_v8a", app_attrs='android:extractNativeLibs="false" android:hasCode="false"'),
+        _make_split_apk("config.de", app_attrs='android:extractNativeLibs="false" android:hasCode="false"'),
+        _make_split_apk("config.xxhdpi", app_attrs='android:extractNativeLibs="false" android:hasCode="false"'),
+    ]
+
+    result = analyze_manifest_security([base, *splits])
+
+    assert result["security_flags"]["allow_backup"] is False
+    assert result["security_flags"]["uses_cleartext_traffic"] is False
+
+
+def test_security_flags_ignore_split_order():
+    """Base APK selection must not depend on the ordering of the split list."""
+    base = _make_split_apk(None, app_attrs='android:allowBackup="false"', target_sdk="36")
+    split = _make_split_apk("config.xxhdpi", app_attrs='android:hasCode="false"')
+
+    result = analyze_manifest_security([split, base])
+
+    assert result["security_flags"]["allow_backup"] is False
+
+
+def test_base_apk_declarations_are_preserved():
+    """Flags the base APK genuinely declares must still be reported."""
+    base = _make_split_apk(
+        None,
+        app_attrs='android:allowBackup="true" android:debuggable="true"',
+        target_sdk="27",
+    )
+    split = _make_split_apk("config.de", app_attrs='android:hasCode="false"')
+
+    result = analyze_manifest_security([base, split])
+
+    assert result["security_flags"]["allow_backup"] is True
+    assert result["security_flags"]["debuggable"] is True
+    assert result["security_flags"]["uses_cleartext_traffic"] is True
+
+
+def test_analyze_manifest_security_without_base_apk():
+    """A split-only APK set cannot be evaluated and must report an error."""
+    splits = [
+        _make_split_apk("config.de", app_attrs='android:hasCode="false"'),
+        _make_split_apk("config.xxhdpi", app_attrs='android:hasCode="false"'),
+    ]
+
+    result = analyze_manifest_security(splits)
+
+    assert "error" in result
+    assert result["security_flags"]["allow_backup"] is False

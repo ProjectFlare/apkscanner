@@ -1,6 +1,5 @@
 """Unit tests for the domain extraction and classification scanner module."""
 
-import importlib
 from unittest import mock
 
 from scanner.scan_modules.domains import extract_domains, is_tracker_domain
@@ -42,32 +41,16 @@ def test_extract_domains_edge_cases():
 
 def test_domains_coverage():
     """Verifies all branches, edge cases, and fallback paths in domains module."""
-    import scanner.scan_modules.domains as domains_module
-
-    # 1. Test sqlite exception when reloading domains_module
-    with mock.patch("sqlite3.connect", side_effect=Exception("mocked sqlite error")):
-        importlib.reload(domains_module)
-
-    # 2. Test regex compilation exception
-    mock_conn = mock.MagicMock()
-    mock_cursor = mock.MagicMock()
-    mock_conn.cursor.return_value = mock_cursor
-    mock_cursor.fetchone.return_value = ("tracker_signatures",)
-    mock_cursor.fetchall.return_value = [("[",)]
-
-    with mock.patch("sqlite3.connect", return_value=mock_conn), mock.patch("os.path.exists", return_value=True):
-        importlib.reload(domains_module)
-
-    # 3. Test is_tracker_domain edge cases
+    # 1. Test is_tracker_domain keyword matching
     with mock.patch("scanner.scan_modules.domains.TRACKER_KEYWORDS", ["ad", "mixpanel"]):
-        # Short kw
+        # Short kw <= 3 chars is skipped
         assert is_tracker_domain("example.com") is False
         # Segment match
         assert is_tracker_domain("mixpanel.com") is True
-        # Well known tracker substring match
+        # Well-known tracker substring match
         assert is_tracker_domain("my-mixpanel-tracker.com") is True
 
-    # 4. urlparse raising exception
+    # 2. urlparse raising exception
     with mock.patch("scanner.scan_modules.domains.urlparse", side_effect=Exception("mocked urlparse error")):
         result = extract_domains({"lib": ["http://example.com"]})
     assert result == {"cloud_services": [], "trackers_and_ads": [], "other": []}

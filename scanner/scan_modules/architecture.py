@@ -3,8 +3,10 @@
 Inspects native shared libraries (.so) and class namespace structures to determine the build environment.
 """
 
+from typing import Any
 
-def analyze_ui_framework(apks, dx):
+
+def analyze_ui_framework(apks: Any, dx: Any) -> str:
     """Identifies the UI framework used to compile the application.
 
     Inspects included native shared libraries (.so) across all APKs and class
@@ -40,7 +42,7 @@ def analyze_ui_framework(apks, dx):
     return "Native (Standard Views)"
 
 
-def analyze_cpu_architecture(apks):
+def analyze_cpu_architecture(apks: Any) -> list[str]:
     """Extracts targeted hardware platforms / ABIs by scanning binary folders.
 
     Args:

@@ -21,9 +21,7 @@ def test_analyze_security_checks():
 
     result = analyze_security_checks(mock_apk, mock_dx)
 
-    assert result["rooted_device_detection"]["detection_missing"] is False
-    assert "Scottyab RootBeer library classes detected" in result["rooted_device_detection"]["indicators"]
-    assert result["static_analysis"]["analysis_blocked"] is True
+    assert "Scottyab RootBeer library classes detected" in result["rooted_device_detection"]
     assert "Qihoo" in result["static_analysis"]["packer_detected"]
 
 
@@ -49,7 +47,6 @@ def test_analyze_security_checks_helpers():
     # 2. Test analyze_security_checks when dx is None
     mock_apk = MagicMock()
     result_none = analyze_security_checks(mock_apk, None)
-    assert result_none["static_analysis"]["analysis_blocked"] is True
     assert "No DEX files or classes could be parsed" in result_none["static_analysis"]["packer_detected"]
 
     # 3. Test exceptions handling in helpers

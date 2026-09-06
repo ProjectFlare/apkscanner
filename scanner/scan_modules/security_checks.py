@@ -4,13 +4,15 @@ Includes detecting root checks and auditing if the application allows static ana
 """
 
 import os
+from collections.abc import Sequence
+from typing import Any
 
 from loguru import logger
 
 from scanner.util.rules import PACKER_SIGNATURES, ROOT_STRINGS
 
 
-def _check_rootbeer_classes(dx) -> bool:
+def _check_rootbeer_classes(dx: Any) -> bool:
     """Checks DEX classes for the presence of RootBeer library classes.
 
     Args:
@@ -30,7 +32,7 @@ def _check_rootbeer_classes(dx) -> bool:
     return False
 
 
-def _scan_string_pool_for_root(dx) -> set[str]:
+def _scan_string_pool_for_root(dx: Any) -> set[str]:
     """Scans the DEX string pool for signatures indicating root checks.
 
     Args:
@@ -39,7 +41,7 @@ def _scan_string_pool_for_root(dx) -> set[str]:
     Returns:
         set[str]: A set of detected root-related string signatures.
     """
-    root_indicators = set()
+    root_indicators: set[str] = set()
     if not dx:
         return root_indicators
     try:
@@ -53,7 +55,7 @@ def _scan_string_pool_for_root(dx) -> set[str]:
     return root_indicators
 
 
-def _check_root_detection(dx) -> set[str]:
+def _check_root_detection(dx: Any) -> set[str]:
     """Checks DEX classes and string pool for rooted device detection indicators.
 
     Args:
@@ -62,7 +64,7 @@ def _check_root_detection(dx) -> set[str]:
     Returns:
         set[str]: A set of detected root-related signatures.
     """
-    root_indicators = set()
+    root_indicators: set[str] = set()
 
     if _check_rootbeer_classes(dx):
         root_indicators.add("Scottyab RootBeer library classes detected")
@@ -72,7 +74,7 @@ def _check_root_detection(dx) -> set[str]:
     return root_indicators
 
 
-def _detect_packer_via_libs(apks) -> str | None:
+def _detect_packer_via_libs(apks: Sequence[Any]) -> str | None:
     """Scans native library files of APKs for signatures of known packers.
 
     Args:
@@ -95,7 +97,7 @@ def _detect_packer_via_libs(apks) -> str | None:
     return None
 
 
-def _detect_packer_via_classes(dx) -> str | None:
+def _detect_packer_via_classes(dx: Any) -> str | None:
     """Scans package names of classes in DEX for signatures of known packers.
 
     Args:
@@ -118,7 +120,7 @@ def _detect_packer_via_classes(dx) -> str | None:
     return None
 
 
-def _detect_packer(apks, dx) -> str | None:
+def _detect_packer(apks: Sequence[Any], dx: Any) -> str | None:
     """Scans native library files and class package names for known packers.
 
     Args:
@@ -135,7 +137,7 @@ def _detect_packer(apks, dx) -> str | None:
     return _detect_packer_via_classes(dx)
 
 
-def analyze_security_checks(apks, dx):
+def analyze_security_checks(apks: Any, dx: Any) -> dict[str, Any]:
     """Evaluates the APK for security-related capabilities (root detection and anti-static analysis).
 
     Checks whether the application implements rooted device detection mechanisms
@@ -147,13 +149,13 @@ def analyze_security_checks(apks, dx):
 
     Returns:
         dict: A report containing the security status flags:
-            - rooted_device_detection (bool): True if root detection signatures are detected.
-            - allows_static_analysis (bool): False if a packer/protector or empty classes are detected.
-            - details (dict): Metadata about identified packer or root indicators.
+            - rooted_device_detection (list[str]): List of root-detection indicators found in the bytecode.
+            - static_analysis (dict): ``packer_detected`` holding the identified packer/protector
+              description, or None when the code is fully analyzable.
     """
-    security_report = {
-        "rooted_device_detection": {"detection_missing": True, "indicators": []},
-        "static_analysis": {"analysis_blocked": False, "packer_detected": None},
+    security_report: dict[str, Any] = {
+        "rooted_device_detection": [],
+        "static_analysis": {"packer_detected": None},
     }
 
     if not isinstance(apks, list):
@@ -162,13 +164,11 @@ def analyze_security_checks(apks, dx):
     # 1. ROOTED DEVICE DETECTION CHECK
     root_indicators = _check_root_detection(dx)
     if root_indicators:
-        security_report["rooted_device_detection"]["detection_missing"] = False
-        security_report["rooted_device_detection"]["indicators"] = sorted(root_indicators)
+        security_report["rooted_device_detection"] = sorted(root_indicators)
 
     # 2. ALLOWS STATIC ANALYSIS CHECK
     # Check if there are DEX files parsed successfully
     if not dx or not dx.get_classes():
-        security_report["static_analysis"]["analysis_blocked"] = True
         security_report["static_analysis"]["packer_detected"] = (
             "No DEX files or classes could be parsed (empty or invalid APK)."
         )
@@ -176,7 +176,6 @@ def analyze_security_checks(apks, dx):
 
     detected_packer = _detect_packer(apks, dx)
     if detected_packer:
-        security_report["static_analysis"]["analysis_blocked"] = True
         security_report["static_analysis"]["packer_detected"] = detected_packer
 
     return security_report

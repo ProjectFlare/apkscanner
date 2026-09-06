@@ -1,0 +1,11 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "include": [
+    "scanner",
+    "tests",
+    "main.py"
+  ],
+  "reportMissingImports": true,
+  "typeCheckingMode": "basic"
+}

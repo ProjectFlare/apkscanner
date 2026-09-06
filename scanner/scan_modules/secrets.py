@@ -5,11 +5,27 @@ their metadata names and origin sources.
 """
 
 import xml.etree.ElementTree as ET
+from typing import Any
 
 from scanner.util.rules import SECRETS_PATTERNS
 
+# File extensions recognized as text or structured configuration files
+_TEXT_EXTENSIONS: tuple[str, ...] = (
+    ".json",
+    ".properties",
+    ".txt",
+    ".conf",
+    ".ini",
+    ".yml",
+    ".yaml",
+    ".xml",
+)
 
-def _scan_dex_strings(dx):
+# Maximum asset file size (in bytes) to scan line-by-line to conserve memory and time
+_MAX_ASSET_SIZE_BYTES: int = 1024 * 1024
+
+
+def _scan_dex_strings(dx: Any) -> list[dict[str, str]]:
     """Scans the DEX string pool for potential secrets.
 
     Args:
@@ -19,7 +35,7 @@ def _scan_dex_strings(dx):
     Returns:
         list[dict[str, str]]: A list of dictionaries representing found secrets.
     """
-    secrets = []
+    secrets: list[dict[str, str]] = []
     for string_val in dx.get_strings():
         val = string_val.get_value()
         if len(val) < 16:
@@ -51,7 +67,7 @@ def _scan_dex_strings(dx):
     return secrets
 
 
-def _scan_resource_strings(apk):
+def _scan_resource_strings(apk: Any) -> list[dict[str, str]]:
     """Scans resource string table XML of an APK for potential secrets.
 
     Args:
@@ -60,7 +76,7 @@ def _scan_resource_strings(apk):
     Returns:
         list[dict[str, str]]: A list of dictionaries representing found secrets.
     """
-    secrets = []
+    secrets: list[dict[str, str]] = []
     try:
         res = apk.get_android_resources()
         if res:
@@ -89,7 +105,7 @@ def _scan_resource_strings(apk):
     return secrets
 
 
-def _scan_raw_assets(apk):
+def _scan_raw_assets(apk: Any) -> list[dict[str, str]]:
     """Scans raw assets and XML files of an APK for potential secrets.
 
     Args:
@@ -98,16 +114,15 @@ def _scan_raw_assets(apk):
     Returns:
         list[dict[str, str]]: A list of dictionaries representing found secrets.
     """
-    secrets = []
-    text_extensions = (".json", ".properties", ".txt", ".conf", ".ini", ".yml", ".yaml", ".xml")
+    secrets: list[dict[str, str]] = []
     try:
         for filename in apk.get_files():
             if filename.startswith(("assets/", "res/raw/", "res/xml/")):
-                if filename.lower().endswith(text_extensions):
+                if filename.lower().endswith(_TEXT_EXTENSIONS):
                     try:
                         raw_data = apk.get_file(filename)
                         # Avoid scanning excessively large files to conserve memory and time.
-                        if raw_data and len(raw_data) < 1024 * 1024:
+                        if raw_data and len(raw_data) < _MAX_ASSET_SIZE_BYTES:
                             content = raw_data.decode("utf-8", errors="ignore")
                             for line in content.splitlines():
                                 line = line.strip()
@@ -146,7 +161,7 @@ def _scan_raw_assets(apk):
     return secrets
 
 
-def _deduplicate_secrets(secrets):
+def _deduplicate_secrets(secrets: list[dict[str, str]]) -> list[dict[str, str]]:
     """De-duplicates the list of extracted secrets.
 
     Args:
@@ -155,8 +170,8 @@ def _deduplicate_secrets(secrets):
     Returns:
         list[dict[str, str]]: De-duplicated list of secrets.
     """
-    unique_secrets = []
-    seen = set()
+    unique_secrets: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
     for secret in secrets:
         key = (secret["type"], secret["value"])
         if key not in seen:
@@ -165,7 +180,7 @@ def _deduplicate_secrets(secrets):
     return unique_secrets
 
 
-def extract_secrets(dx, apks=None):
+def extract_secrets(dx: Any, apks: Any = None) -> list[dict[str, str]]:
     """Scans DEX strings, resource tables, and text assets for potential secrets.
 
     Detects common credentials (e.g., Google API keys, AWS keys, JWT tokens, etc.)
@@ -183,7 +198,7 @@ def extract_secrets(dx, apks=None):
             - name (str): The name/variable associated with the secret.
             - source (str): The origin class or file location.
     """
-    secrets = []
+    secrets: list[dict[str, str]] = []
 
     # 1. Scan DEX string pool
     secrets.extend(_scan_dex_strings(dx))

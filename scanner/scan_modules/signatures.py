@@ -1,16 +1,18 @@
 """Module for auditing the APK developer signing certificates and signature schemes.
 
-Checks for certificate expiration, self-signed status, debug signers, and signature
-algorithm strengths.
+Checks for self-signed status, debug signers, and signature algorithm strengths, and
+records certificate parameters such as the validity period in the report.
 """
 
 import datetime
 import os
+from collections.abc import Sequence
+from typing import Any
 
 from loguru import logger
 
 
-def _parse_single_certificate(cert) -> dict:
+def _parse_single_certificate(cert: Any) -> dict[str, Any]:
     """Parses a single certificate object into a details dictionary.
 
     Args:
@@ -19,7 +21,7 @@ def _parse_single_certificate(cert) -> dict:
     Returns:
         dict: A dictionary containing certificate parameters.
     """
-    cert_details = {}
+    cert_details: dict[str, Any] = {}
 
     # Format subject & issuer names cleanly
     try:
@@ -59,7 +61,7 @@ def _parse_single_certificate(cert) -> dict:
     return cert_details
 
 
-def _audit_certificates(base_apk) -> tuple[list[dict], bool, bool]:
+def _audit_certificates(base_apk: Any) -> tuple[list[dict[str, Any]], bool, bool]:
     """Audits base APK certificates for vulnerability indicators.
 
     Extracts certificate parameters and checks for debug certs and weak hash algos.
@@ -73,7 +75,7 @@ def _audit_certificates(base_apk) -> tuple[list[dict], bool, bool]:
             - is_debug_signed (bool): True if signed with a debug certificate.
             - has_weak_hash (bool): True if signed with MD5 or SHA1.
     """
-    certs_list = []
+    certs_list: list[dict[str, Any]] = []
     is_debug_signed = False
     has_weak_hash = False
 
@@ -99,22 +101,19 @@ def _audit_certificates(base_apk) -> tuple[list[dict], bool, bool]:
     return certs_list, is_debug_signed, has_weak_hash
 
 
-def _audit_split_alignment(apks: list, base_apk) -> tuple[bool, list[str]]:
+def _audit_split_alignment(apks: Sequence[Any], base_apk: Any) -> list[str]:
     """Audits signature alignment across all split APKs compared to base APK.
 
     Args:
-        apks (list): A list of parsed APK objects.
+        apks (Sequence[Any]): A list of parsed APK objects.
         base_apk: The base APK object (first element of apks).
 
     Returns:
-        tuple[bool, list[str]]: A tuple containing:
-            - split_signatures_aligned (bool): True if all split APK signatures align.
-            - mismatched_splits (list[str]): List of mismatching split filenames.
+        list[str]: List of mismatching split filenames.
     """
-    split_signatures_aligned = True
-    mismatched_splits = []
+    mismatched_splits: list[str] = []
 
-    base_fingerprints = set()
+    base_fingerprints: set[str] = set()
     try:
         base_certs = base_apk.get_certificates()
         for cert in base_certs:
@@ -133,39 +132,36 @@ def _audit_split_alignment(apks: list, base_apk) -> tuple[bool, list[str]]:
 
         try:
             if not split_apk.is_signed():
-                split_signatures_aligned = False
                 mismatched_splits.append(f"{split_name} (unsigned)")
                 continue
 
             split_certs = split_apk.get_certificates()
             if not split_certs:
-                split_signatures_aligned = False
                 mismatched_splits.append(f"{split_name} (no certificates)")
                 continue
 
-            split_fingerprints = set()
+            split_fingerprints: set[str] = set()
             for cert in split_certs:
                 fingerprint = getattr(cert, "sha256_fingerprint", "Unknown")
                 if fingerprint != "Unknown":
                     split_fingerprints.add(fingerprint.strip().replace(" ", "").lower())
 
             if split_fingerprints != base_fingerprints:
-                split_signatures_aligned = False
                 mismatched_splits.append(f"{split_name} (signature mismatch)")
         except Exception as e:
-            split_signatures_aligned = False
             mismatched_splits.append(f"{split_name} (failed to read signature: {e!s})")
             logger.warning(f"Failed to audit split APK signature for {split_name}: {e!s}")
 
-    return split_signatures_aligned, mismatched_splits
+    return mismatched_splits
 
 
-def audit_signatures(apks):
+def audit_signatures(apks: Any) -> dict[str, Any]:
     """Audits the cryptographic signatures and certificates of the APK objects.
 
     Checks the APK signature schemes (v1, v2, v3) and parses the developer
     certificate parameters including subject, issuer, validity period, and hashing
-    algorithms. Identifies weak signature hashes or debug cert usage.
+    algorithms. Identifies weak signature hashes, debug cert usage, and APKs relying
+    solely on the legacy v1 (JAR) signature scheme.
 
     Args:
         apks (APK or list): A single parsed APK object or a list of split APK objects.
@@ -173,21 +169,21 @@ def audit_signatures(apks):
     Returns:
         dict: A dictionary containing certificate audits and signing configurations:
             - scheme_versions (list[str]): List of active signature versions (e.g. ["v1", "v2"]).
+            - v1_only_signature (bool): True if only the legacy v1 (JAR) scheme is active.
             - certificates (list[dict]): Details of each signing certificate found.
             - is_debug_signed (bool): True if signed with a debug certificate.
             - has_weak_hash (bool): True if signed with a weak algorithm (MD5/SHA1).
-            - split_signatures_aligned (bool): True if all split APK signatures align.
             - mismatched_splits (list[str]): List of mismatching split filenames.
     """
     if not isinstance(apks, list):
         apks = [apks]
 
-    report = {
+    report: dict[str, Any] = {
         "scheme_versions": [],
+        "v1_only_signature": False,
         "certificates": [],
         "is_debug_signed": False,
         "has_weak_hash": False,
-        "split_signatures_aligned": True,
         "mismatched_splits": [],
     }
 
@@ -205,6 +201,10 @@ def audit_signatures(apks):
     if base_apk.is_signed_v3():
         report["scheme_versions"].append("v3")
 
+    # v1 (JAR) signing alone provides no whole-file integrity and is vulnerable to the
+    # Janus vulnerability (CVE-2017-13156) on Android 5.0-8.1; v2/v3 schemes prevent it.
+    report["v1_only_signature"] = report["scheme_versions"] == ["v1"]
+
     # Extract and audit certificate details
     certs_list, is_debug, has_weak = _audit_certificates(base_apk)
     report["certificates"] = certs_list
@@ -213,8 +213,6 @@ def audit_signatures(apks):
 
     # Audit signature alignment across split APKs
     if len(apks) > 1:
-        aligned, mismatched = _audit_split_alignment(apks, base_apk)
-        report["split_signatures_aligned"] = aligned
-        report["mismatched_splits"] = mismatched
+        report["mismatched_splits"] = _audit_split_alignment(apks, base_apk)
 
     return report

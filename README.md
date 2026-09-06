@@ -4,33 +4,33 @@ APK Scanner is a professional static analysis tool designed for parsing, auditin
 
 ## Core Capabilities
 
-- **Decompilation & Bytecode Analysis**: Deconstructs DEX bytecode files utilizing [Androguard](https://github.com/androguard/androguard) to audit code patterns, detect common security vulnerabilities (such as weak encryption, disabled SSL connection checks, insecure web configurations, and dynamic loading of untrusted code), and trace execution paths.
-- **Manifest Audit & Security Flags**: Scans Android configuration manifests to flag unsafe parameters, such as debug mode enabled, insecure data backup configurations, and cleartext traffic allowances.
-- **Dependency Vulnerability Scans**: Extracts third-party library dependencies from the application, maps them to standard software coordinates, and queries the **OSV (Open Source Vulnerability) database** for known public security issues.
-- **Cryptographic & Secret Auditing**: Analyzes application string data and resource tables to identify accidentally exposed secrets, such as API keys, private access tokens, passwords, and custom URL schemas.
-- **Network & Domain Categorization**: Normalizes extracted web links and hostnames, cross-referencing them with threat databases and ad-tracker records to flag analytics trackers, advertising networks, and known malicious websites.
-- **Security Rating & OWASP Correlation**: Calculates an overall security score and grade based on the number and severity of findings, mapping identified risks directly to the [OWASP MASVS (Mobile Application Security Verification Standard)](https://masvs.owasp.org) categories.
+- **Decompilation & Bytecode Analysis**: Deconstructs DEX bytecode files utilizing [Androguard](https://github.com/androguard/androguard) to audit code patterns, detect common security vulnerabilities and trace execution paths.
+- **Manifest Audit & Security Flags**: Scans Android configuration manifests to flag unsafe parameters, such as debug mode enabled, insecure data backup configurations and cleartext traffic allowances.
+- **Dependency Vulnerability Scans**: Extracts third-party library dependencies from the application and queries the [OSV database](https://osv.dev/list) for known public security issues.
+- **Cryptographic & Secret Auditing**: Analyzes application string data and resource tables to identify accidentally exposed secrets.
+- **Network & Domain Categorization**: Queries [URLHouse database](https://urlhaus.abuse.ch/browse/) to flag known malicious websites.
+- **Security Rating & OWASP Correlation**: Calculates an recommendation based on findings and mapping identified risks directly to [OWASP MASVS](https://masvs.owasp.org).
 
 ---
 
 ## AI-Powered Security Reports
 
-In addition to JSON reporting, the scanner supports generating an automated **AI Security Assessment Report** in Markdown format. This leverages a local [Ollama](https://ollama.com) model and integrates dynamic online threat intelligence lookup.
+In addition to JSON reporting, the scanner supports generating an automated **AI Security Assessment Report** in Markdown format. This works with any OpenAI-compatible API server, local or hosted (e.g., Ollama, Llama.cpp, MLX/OptiQ, LM Studio, or vLLM) and integrates dynamic online threat intelligence lookup.
 
 > [!IMPORTANT]
-> The Scraper API is required to achieve the best results for the AI report. Without it, the generated report will lack Play Store descriptions, developer context, and live threat intelligence web search, falling back to basic offline-only summaries.
+> The Scraper API is recommended to achieve the best results for the AI report. Without it, the generated report will lack Play Store descriptions, developer context, and live threat intelligence web search, falling back to basic offline-only summaries.
 
 ### AI Capabilities
 
 - **Play Store Metadata Probing**: Automatically queries Google Play details using a [Playwright](https://playwright.dev)-rendered scraper to obtain application context (description, developer details, downloads) for a more accurate threat model.
-- **LLM Findings Summarization**: Translates raw static analysis JSON dumps into readable threat assessment text, filtering out boilerplate library noise and duplicate reports.
-- **Remediation Recommendations**: Suggests actionable mitigation instructions tailored specifically to the Android platform for each flagged vulnerability.
+- **LLM Summarization**: Sumerizes findings of the static analysis JSON report, explaining false positives.
+- **Recommendations**: Suggests actionable mitigation instructions.
 
 ### Scraper API Specification
 
 Because running a heavy Playwright/Chromium scraper in Docker is not always preferred in corporate or restricted environments, the scanner decouples the web-scraping logic. If you want to build or integrate your own scraper microservice (to bypass bot protection on Google Play or search engines), it must implement the API contract detailed below.
 
-This custom scraper endpoint is invoked when running an AI-assisted scan (as shown in [Start a Static Scan with AI Security Report](#start-a-static-analysis-scan-with-ai-security-report)) or when performing rules database updates, and is configured via the [`--scraper-url`](#optional-arguments) argument (see [Optional Arguments](#optional-arguments)).
+This custom scraper endpoint is invoked when running an AI-assisted scan (as shown in [Start a Static Analysis Scan with AI Security Report](#start-a-static-analysis-scan-with-ai-security-report)) or as an optional fallback when performing rules database updates, and is configured via the [`--scraper-url`](#arguments) argument (see [Arguments](#arguments)).
 
 - **Protocol**: HTTP/HTTPS
 - **Method**: `GET`
@@ -79,31 +79,40 @@ uv sync
 
 This single command will automatically download Python 3.12.13 (if not available), create a `.venv/` virtual environment, and install all required libraries.
 
-### Step 3: Start the Scraper API & Ollama (Optional)
+### Step 3: Start the Scraper API & LLM Server (Ollama or OptiQ/MLX) (Optional)
 
-If you plan to use **AI report generation** or **update the rules database** from remote sources, make sure your external microservices are active:
+If you plan to use **AI report generation** or **update the rules database** from remote sources, make sure your external microservices and local model servers are active:
 
 1. **Start the Scraper API**: Run your [Playwright](https://playwright.dev) Scraper API microservice (see [Scraper API Specification](#scraper-api-specification) for the API details). The Scraper API is highly recommended to achieve the best results for the AI report as it feeds Google Play metadata and live search results into the assessment logic. Without it, online lookups are disabled.
-2. **Start a local Ollama instance**: Make sure [Ollama](https://ollama.com) is installed and running on your host machine (default endpoint: `http://127.0.0.1:11434`).
-3. **Pull the AI Model**: Download the default LLM model (`deepseek-r1:14b`) or your chosen model:
+2. **Start the LLM Server**: Choose one of the following options:
+
+#### Option A: Local Ollama instance (OpenAI-compatible endpoint at `/v1`)
+
+Make sure [Ollama](https://ollama.com) is installed and running on your host machine. Its OpenAI-compatible endpoint is `http://localhost:11434/v1`.
+
+Pull and run the Ollama model:
 
 ```bash
- ollama pull deepseek-r1:14b
+ollama pull qwen3.6:35b
+
+ollama run qwen3.6:35b
 ```
 
-### Step 4: Update the Rules Database (Optional)
+#### Option B: Local OpenAI-compatible OptiQ/MLX server (Optimized for Apple Silicon)
 
-To update the local SQLite database with fresh definitions from live upstream feeds (requires the Scraper API to be active):
+Launch the OptiQ/MLX model server:
 
 ```bash
-uv run python main.py --update-rules
+optiq serve --model mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit --mtp --port 12345
 ```
 
-For more information, see [Rules Database Updates](#rules-database-updates).
+When running the scanner with this option, pass `--openai-url http://localhost:12345/v1` and `--ai-model mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit`.
+
+### Step 4: Update the Rules Database
+
+Update the local SQLite database with fresh definitions from live upstream feeds. For more information, see [Rules Database Updates](#rules-database-updates).
 
 ### Step 5: Run the Scan Command
-
-Execute the scanner using one of the examples below:
 
 #### Start a Static Analysis Scan without AI Security Report
 
@@ -115,34 +124,38 @@ uv run python main.py ./apks/de.vispiron.carsync.fahrtenbuch_3.6.20_apk.zip ./re
 
 #### Start a Static Analysis Scan with AI Security Report
 
-To perform the static scan, generate a JSON report, and compile an AI report utilizing a custom Ollama model and Playwright scraper URL:
+To perform the static scan, generate a JSON report, and compile an AI report using any OpenAI-compatible model server and the scraper URL:
 
 ```bash
-uv run python main.py ./apks/de.vispiron.carsync.fahrtenbuch_3.6.20_apk.zip ./reports/de.vispiron.carsync.fahrtenbuch_3.6.20_apk_report.json --ai-report ./reports/de.vispiron.carsync.fahrtenbuch_3.6.20_ai.md --ai-model deepseek-r1:14b --scraper-url http://localhost:8000
+uv run python main.py ./apks/de.vispiron.carsync.fahrtenbuch_3.6.20_apk.zip ./reports/de.vispiron.carsync.fahrtenbuch_3.6.20_apk_report.json --ai-model mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit --openai-url http://localhost:12345/v1 --scraper-url http://localhost:8000
 ```
 
-### Optional Arguments
+### Arguments
 
-The main entry point supports the following CLI flags:
+The main entry point supports the following CLI arguments:
 
-- `apk_path` _(Positional)_: Path to the target `.apk` or `.zip` file. (Accepts an existing JSON scan report if using `--ai-only`).
-- `output_file` _(Positional)_: Path to save the structured JSON report. (Ignored if running in `--ai-only` mode).
-- `--update-rules`: Rebuilds and updates the local SQLite rules database from remote upstream sources, then exits. Requires the Scraper API.
-- `--ai-report <path>`: Enables AI report compilation and defines the path to save the generated Markdown report.
-- `--ai-model <model>`: The local Ollama model to invoke (default: `deepseek-r1:14b`).
-- `--ollama-url <url>`: The local Ollama API service endpoint (default: `http://127.0.0.1:11434`).
-- `--scraper-url <url>`: The Playwright scraper API URL (e.g. `http://localhost:8000`) used for Play Store and threat intelligence web searches. If omitted, the scanner attempts to auto-detect a running scraper at `localhost:8000`. Web search is disabled if no scraper is active. See [Scraper API Specification](#scraper-api-specification) for implementation details.
-- `--ai-only`: Skips static analysis scanning and compiles only the AI Markdown report using an existing JSON report passed as the first positional argument.
+- `apk_path` _(Positional)_: Path to the target `.apk` or `.zip` file, or an existing JSON scan report when running with `--ai-only`.
+- `output_file` _(Positional)_: Path to save the structured JSON report.
+- `--update-rules`: Rebuilds and updates the local SQLite rules database from remote upstream sources, then exits.
+- `--ai-report [path]`: Destination path to save the Markdown AI security assessment report. By default saved to `{output_file_base}_ai.md`.
+- `--ai-model <model>`: The LLM model identifier to request from the API server (default: `qwen3.6:35b`).
+- `--openai-url <url>`: Base URL of an OpenAI-compatible API server. Required when `--ai-report` is used. Works with any server speaking that protocol, local or hosted: Ollama (`http://localhost:11434/v1`), MLX/OptiQ (`http://localhost:12345/v1`), LM Studio, vLLM, or a remote gateway.
+- `--ai-api-key <key>`: Bearer authentication token sent in the Authorization header to OpenAI-compatible endpoints.
+- `--ai-request-timeout <seconds>`: Timeout in seconds for agentic loop turns (default: `900`).
+- `--ai-direct-request-timeout <seconds>`: Timeout in seconds for direct LLM queries (default: `300`).
+- `--ai-concurrency <number>`: Number of concurrent worker threads to execute AI section evaluations in parallel (default: `1`).
+- `--max-tool-iterations <number>`: Maximum number of tool-call rounds the model may perform per report section (default: `7`).
+- `--scraper-url <url>`: The scraper API URL used for threat intelligence web searches. If omitted, the scanner dynamically probes for a running scraper at `http://localhost:8000`. If unavailable, live web search is disabled. See [Scraper API Specification](#scraper-api-specification) for details.
+- `--ai-only`: Skips static analysis scanning and compiles only the AI Markdown report using an existing JSON scan report passed as `apk_path`.
+- `--disable-thinking`: Asks the model to skip its reasoning phase. Useful on local reasoning models to accelerate report generation.
+- `--pdf`: Generates a companion PDF version of the AI security report (`{report_name}_ai.pdf`). If supplied with an existing `.md` Markdown report file as `apk_path`, converts it directly into a PDF report.
 - `--verbose`: Enables verbose logging output, showing raw messages from third-party libraries like Androguard and urllib3.
 
 ---
 
 ## Rules Database Updates
 
-The scanner relies on a local compiled SQLite database (`scanner/rules.db`) to classify domains, identify ad-trackers, resolve Maven libraries, detect vulnerable code signatures, and categorize permissions. This database is managed using the **SQLModel ORM** (mapping models directly to SQLite schemas).
-
-> [!IMPORTANT]
-> The Scraper API is required to successfully update the rules database from remote upstream sources. Without an active scraper API (configured via `--scraper-url`), the database update command will fail or skip network resources, falling back to local configurations.
+The scanner relies on a local compiled SQLite database (`scanner/rules.db`) to store OWASP MASVS rule definitions, classify domains, identify ad-trackers, resolve Maven libraries, detect vulnerable code signatures, and categorize permissions. This database is managed using the **SQLModel ORM** (mapping declarative Python models directly to SQLite tables).
 
 To update the rules database with fresh definitions from live upstream feeds, execute:
 
@@ -152,7 +165,7 @@ uv run python main.py --update-rules
 
 ### Upstream Sources of Information (Fetched Online)
 
-When `--update-rules` is run, the database fetches the latest records from the following official repositories:
+When `--update-rules` is run, the database fetches the latest records directly over HTTPS from the following official repositories:
 
 - **Dangerous & Install Permissions**: Fetched dynamically from the official [Android Open Source Project (AOSP)](https://source.android.com) manifest repository to map runtime permission criteria.
 - **Ad Trackers & Analytics signatures**: Fetched dynamically from the [Exodus Privacy](https://exodus-privacy.eu.org) trackers database API to map signature tokens.
@@ -160,8 +173,9 @@ When `--update-rules` is run, the database fetches the latest records from the f
 
 ### Offline Fallback Definitions (Loaded from `rules.py`)
 
-If no online update has been performed, or if the update fails, the database initialization falls back to hardcoded python lists defined in `scanner/util/rules.py` to seed the database tables:
+If no online update has been performed, or if the update fails, the database initialization falls back to hardcoded definitions defined in `scanner/util/rules.py`:
 
+- **OWASP MASVS & Mobile Top 10 Rules**: Pre-configured definitions mapping findings to MASVS IDs, MASTG tests, category titles, descriptions, and remediations.
 - **Cloud Keywords**: Hostname patterns mapping cloud providers (AWS, Azure, Firebase).
 - **XML Schema Exclusions**: Common namespaces (w3.org, android namespace) to reduce URL false positives.
 - **Secrets Regex Patterns**: Regular expression signatures for API Keys, AWS secrets, Slack tokens, etc.
@@ -172,31 +186,13 @@ If no online update has been performed, or if the update fails, the database ini
 
 ## Development & Testing
 
-### Running the Test Suite
-
-To run the automated pytest suite (108 unit and integration tests):
+`Makefile` is used to manage development workflows, quality checks, and documentation. To run formatting, linting, type checking, dead-code analysis, pytest suite, and documentation build:
 
 ```bash
-uv run pytest
+make verify
 ```
 
-### Generating Code Coverage Reports
-
-To run tests and output a line-by-line coverage report:
-
-```bash
-uv run pytest --cov=scanner --cov-report=term-missing
-```
-
-### Rebuilding the Sphinx Documentation
-
-To re-compile the Sphinx HTML documentation (incorporating Napier Google-style docstring parsing):
-
-```bash
-uv run sphinx-build -b html docs/source docs/build/html
-```
-
-The output index file will be compiled at `docs/build/html/index.html`.
+The output index file for docs will be compiled at `docs/build/html/index.html`.
 
 ### Dependency Management
 

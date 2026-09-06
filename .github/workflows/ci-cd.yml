@@ -36,13 +36,10 @@ jobs:
         run: |
           uv sync
 
-      - name: Run Pytest Test Suite
+      - name: Run Verification Checks
         run: |
-          uv run pytest
+          make verify
 
-      - name: Build Sphinx Documentation
-        run: |
-          uv run sphinx-build -b html docs/source docs/build/html
 
       - name: Bypass Jekyll processing
         run: touch docs/build/html/.nojekyll

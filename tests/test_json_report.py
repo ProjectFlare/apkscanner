@@ -67,7 +67,16 @@ def test_build_scan_report_returns_report_shape(monkeypatch, tmp_path):
     monkeypatch.setattr(f"{MOD}.analyze_manifest_security", lambda apk_objects: {"issues": []})
     monkeypatch.setattr(f"{MOD}.analyze_security_checks", lambda apk_objects, dx: {"root_detection": False})
     monkeypatch.setattr(f"{MOD}.extract_permissions", lambda apk_objects, dx: {"runtime_requested": []})
-    monkeypatch.setattr(f"{MOD}.extract_dependencies", lambda apk_objects, dx: [])
+    monkeypatch.setattr(
+        f"{MOD}.extract_dependencies",
+        lambda apk_objects, dx: {"system": {}, "third_party": {}, "unversioned": {}},
+    )
+    monkeypatch.setattr(f"{MOD}.check_dependencies_osv", lambda deps: [])
+    monkeypatch.setattr(f"{MOD}.resolve_latest_versions", lambda deps: {})
+    monkeypatch.setattr(
+        f"{MOD}.assemble_dependencies",
+        lambda raw, osv, maven: {"third_party": {}, "android_default": {}},
+    )
     monkeypatch.setattr(f"{MOD}.extract_secrets", lambda dx, apk_objects: [])
     monkeypatch.setattr(f"{MOD}.analyze_bytecode", lambda dx: {"findings": []})
     monkeypatch.setattr(

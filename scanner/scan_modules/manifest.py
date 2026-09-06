@@ -4,11 +4,13 @@ Includes resolving and parsing Network Security Configuration XML policies.
 """
 
 import xml.etree.ElementTree as ET
+from collections.abc import Sequence
+from typing import Any
 
 from androguard.core.axml import AXMLPrinter
 
 
-def resolve_ref_value(apk, value):
+def resolve_ref_value(apk: Any, value: Any) -> Any:
     """Resolves a resource reference (e.g. @7F110516) to its actual string/bool value.
 
     Args:
@@ -29,7 +31,7 @@ def resolve_ref_value(apk, value):
     return value
 
 
-def _is_true(val, default=False):
+def _is_true(val: Any, default: bool = False) -> bool:
     """Safely checks if a manifest attribute value represents a boolean True."""
     if val is None:
         return default
@@ -39,7 +41,7 @@ def _is_true(val, default=False):
     return val_str in ("true", "1")
 
 
-def _find_network_security_config_path(apk, net_config_res):
+def _find_network_security_config_path(apk: Any, net_config_res: str) -> str | None:
     """Resolves and searches for the Network Security Configuration XML file path within the APK.
 
     Args:
@@ -63,10 +65,10 @@ def _find_network_security_config_path(apk, net_config_res):
     # If it returned a list of paths, pick the first one
     if isinstance(config_path, list) and config_path:
         config_path = config_path[0]
-    return config_path
+    return config_path if isinstance(config_path, str) else None
 
 
-def _load_network_security_config_xml(apk, config_path):
+def _load_network_security_config_xml(apk: Any, config_path: str) -> ET.Element | None:
     """Retrieves and parses the binary AXML network security config into an ElementTree.Element.
 
     Args:
@@ -89,7 +91,7 @@ def _load_network_security_config_xml(apk, config_path):
     return ET.fromstring(xml_buff)
 
 
-def _parse_base_config_element(base_config, findings):
+def _parse_base_config_element(base_config: ET.Element, findings: dict[str, Any]) -> None:
     """Parses base-config element and updates the findings dictionary.
 
     Args:
@@ -108,7 +110,7 @@ def _parse_base_config_element(base_config, findings):
                 findings["trusts_user_certs"] = True
 
 
-def _parse_domain_config_element(elem, findings):
+def _parse_domain_config_element(elem: ET.Element, findings: dict[str, Any]) -> None:
     """Recursively parses a domain-config element and updates the findings dictionary.
 
     Args:
@@ -135,7 +137,7 @@ def _parse_domain_config_element(elem, findings):
         _parse_domain_config_element(child, findings)
 
 
-def parse_network_security_config(apk, net_config_res):
+def parse_network_security_config(apk: Any, net_config_res: str) -> dict[str, Any]:
     """Parses binary Network Security Configuration XML file.
 
     Extracts rules regarding global cleartext traffic, domain-specific cleartext exceptions,
@@ -151,7 +153,7 @@ def parse_network_security_config(apk, net_config_res):
             - domain_cleartext_list (list[str]): List of domains where cleartext is permitted.
             - trusts_user_certs (bool): True if user certificates are trusted in production config.
     """
-    findings = {"global_cleartext": None, "domain_cleartext_list": [], "trusts_user_certs": False}
+    findings: dict[str, Any] = {"global_cleartext": None, "domain_cleartext_list": [], "trusts_user_certs": False}
 
     try:
         config_path = _find_network_security_config_path(apk, net_config_res)
@@ -177,7 +179,7 @@ def parse_network_security_config(apk, net_config_res):
     return findings
 
 
-def _parse_single_apk_manifest_flags(apk, android_ns):
+def _parse_single_apk_manifest_flags(apk: Any, android_ns: str) -> dict[str, Any] | None:
     """Parses application-level security attributes from a single APK's manifest.
 
     Args:
@@ -202,7 +204,7 @@ def _parse_single_apk_manifest_flags(apk, android_ns):
         return None
 
     attribs = app_elem.attrib
-    findings = {
+    findings: dict[str, Any] = {
         "allow_backup": False,
         "debuggable": False,
         "uses_cleartext_traffic": False,
@@ -246,12 +248,58 @@ def _parse_single_apk_manifest_flags(apk, android_ns):
     return findings
 
 
-def analyze_manifest_security(apks):
+def _is_base_apk(apk: Any) -> bool:
+    """Checks whether an APK is the base APK of a split APK set.
+
+    Configuration splits declare a ``split`` attribute on the manifest root element,
+    whereas the base APK does not. A standalone (non-split) APK is therefore also
+    treated as a base APK.
+
+    Args:
+        apk (androguard.core.apk.APK): The parsed APK object.
+
+    Returns:
+        bool: True if the APK is the base APK, False for configuration splits or
+            when the manifest cannot be read.
+    """
+    xml_root = apk.get_android_manifest_xml()
+    if xml_root is None:
+        return False
+    return xml_root.attrib.get("split") is None
+
+
+def _select_base_apk(apks: Sequence[Any]) -> tuple[Any, list[str]]:
+    """Selects the base APK from a list of split APKs.
+
+    Args:
+        apks (Sequence[Any]): List of parsed APK objects.
+
+    Returns:
+        tuple: A ``(base_apk, errors)`` pair where ``base_apk`` is the base APK object
+            or None if none could be identified, and ``errors`` is a list of parse
+            error strings encountered while inspecting the manifests.
+    """
+    errors: list[str] = []
+    for apk in apks:
+        try:
+            if _is_base_apk(apk):
+                return apk, errors
+        except Exception as e:
+            errors.append(str(e))
+    return None, errors
+
+
+def analyze_manifest_security(apks: Any) -> dict[str, Any]:
     """Parses AndroidManifest.xml and evaluates security configurations.
 
     Checks the application manifest for critical security flags such as allowBackup,
-    debuggable, usesCleartextTraffic, and requestLegacyExternalStorage. Aggregates results
-    from all split APK manifests if a list is provided.
+    debuggable, usesCleartextTraffic, and requestLegacyExternalStorage.
+
+    Application-level security attributes are read exclusively from the base APK.
+    Configuration splits ship a stub ``<application>`` element that omits these
+    attributes entirely, so applying the Android platform defaults to a split would
+    fabricate flag values that the split never declared. Only the base manifest
+    declares these attributes for the merged application.
 
     Args:
         apks (APK or list): A single parsed APK object or a list of split APK objects.
@@ -259,9 +307,10 @@ def analyze_manifest_security(apks):
     Returns:
         dict: A structured report containing:
             - security_flags (dict): Dictionary of evaluated Boolean security-critical attributes.
+            - network_security_config (dict, optional): Parsed network security config findings.
             - error (str, optional): Parsing error message if retrieval fails.
     """
-    manifest_report: dict = {
+    manifest_report: dict[str, Any] = {
         "security_flags": {
             "allow_backup": False,
             "debuggable": False,
@@ -280,46 +329,32 @@ def analyze_manifest_security(apks):
 
     android_ns = "{http://schemas.android.com/apk/res/android}"
 
-    allow_backup_any = False
-    debuggable_any = False
-    uses_cleartext_any = False
-    net_config_found = False
-    legacy_storage_any = False
+    base_apk, errors = _select_base_apk(apks)
 
-    parsed_at_least_one = False
-    errors = []
-
-    for apk in apks:
-        try:
-            findings = _parse_single_apk_manifest_flags(apk, android_ns)
-            if findings is None:
-                continue
-            parsed_at_least_one = True
-        except Exception as e:
-            errors.append(str(e))
-            continue
-
-        if findings["allow_backup"]:
-            allow_backup_any = True
-        if findings["debuggable"]:
-            debuggable_any = True
-        if findings["uses_cleartext_traffic"]:
-            uses_cleartext_any = True
-        if findings["network_security_config"] is not None:
-            net_config_found = True
-            # Store/overwrite the network security config if found
-            manifest_report["network_security_config"] = findings["network_security_config"]
-        if findings["request_legacy_external_storage"]:
-            legacy_storage_any = True
-
-    if not parsed_at_least_one:
+    if base_apk is None:
         manifest_report["error"] = f"Failed to retrieve AndroidManifest XML from any APK: {'; '.join(errors)}"
         return manifest_report
 
-    manifest_report["security_flags"]["allow_backup"] = allow_backup_any
-    manifest_report["security_flags"]["debuggable"] = debuggable_any
-    manifest_report["security_flags"]["uses_cleartext_traffic"] = uses_cleartext_any
-    manifest_report["security_flags"]["network_security_config_missing"] = not net_config_found
-    manifest_report["security_flags"]["request_legacy_external_storage"] = legacy_storage_any
+    try:
+        findings = _parse_single_apk_manifest_flags(base_apk, android_ns)
+    except Exception as e:
+        manifest_report["error"] = f"Failed to retrieve AndroidManifest XML from any APK: {e}"
+        return manifest_report
+
+    if findings is None:
+        manifest_report["error"] = (
+            "Failed to retrieve AndroidManifest XML from any APK: base manifest has no application element."
+        )
+        return manifest_report
+
+    net_config = findings["network_security_config"]
+    if net_config is not None:
+        manifest_report["network_security_config"] = net_config
+
+    manifest_report["security_flags"]["allow_backup"] = findings["allow_backup"]
+    manifest_report["security_flags"]["debuggable"] = findings["debuggable"]
+    manifest_report["security_flags"]["uses_cleartext_traffic"] = findings["uses_cleartext_traffic"]
+    manifest_report["security_flags"]["network_security_config_missing"] = net_config is None
+    manifest_report["security_flags"]["request_legacy_external_storage"] = findings["request_legacy_external_storage"]
 
     return manifest_report

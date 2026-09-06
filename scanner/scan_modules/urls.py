@@ -4,16 +4,18 @@ Attributes extracted URLs to their referencing library or application context.
 """
 
 import re
+from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 from scanner.util.rules import SCHEMA_KEYWORDS
 
-# Pre-compile the URL regex patterns outside the extraction loops to maximize execution speed.
-HTTP_REGEX = re.compile(r"https?://(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?::\d+)?(?:/[^\s\"'>]*)?")
-PATH_REGEX = re.compile(r"\b(?:[a-zA-Z0-9-]+\.)+(?:com|net|org|io|de|co|us|uk|app|dev)(?::\d+)?/[^\s\"'>]+\b")
+# Pre-compiled URL regex patterns outside extraction loops to maximize execution speed
+_HTTP_RE = re.compile(r"https?://(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?::\d+)?(?:/[^\s\"'>]*)?")
+_PATH_RE = re.compile(r"\b(?:[a-zA-Z0-9-]+\.)+(?:com|net|org|io|de|co|us|uk|app|dev)(?::\d+)?/[^\s\"'>]+\b")
+_OBFUSCATED_SEGMENT_RE = re.compile(r"^[a-zA-Z]\d*$")
 
 
-def _clean_and_filter_url(url):
+def _clean_and_filter_url(url: str) -> str | None:
     """Cleans control chars/null bytes from URLs and filters out schema/docs.
 
     Args:
@@ -22,7 +24,7 @@ def _clean_and_filter_url(url):
     Returns:
         str | None: Cleaned URL, or None if it should be skipped.
     """
-    url_clean = url.strip().strip("\u0000").rstrip("#")
+    url_clean = url.strip().strip("\u0000").rstrip("#").rstrip(".,;)>'\"")
 
     # Exclude standard boilerplate namespaces and generic developer documentation links
     if any(k in url_clean for k in SCHEMA_KEYWORDS):
@@ -40,10 +42,7 @@ def _clean_and_filter_url(url):
     return url_clean if url_clean else None
 
 
-OBFUSCATED_SEGMENT = re.compile(r"^[a-zA-Z]\d*$|^[a-zA-Z]\d+$")
-
-
-def _is_obfuscated_package(clean_cls):
+def _is_obfuscated_package(clean_cls: list[str]) -> bool:
     """Checks if a package path segments list looks obfuscated by R8/Proguard.
 
     Args:
@@ -58,7 +57,7 @@ def _is_obfuscated_package(clean_cls):
     pkg_segments = clean_cls[:-1]
 
     # If all package segments are short or match the obfuscation pattern
-    if all(len(p) <= 2 or OBFUSCATED_SEGMENT.match(p) is not None for p in pkg_segments):
+    if all(len(p) <= 2 or _OBFUSCATED_SEGMENT_RE.match(p) is not None for p in pkg_segments):
         return True
 
     return False
@@ -109,7 +108,7 @@ def _filter_and_deduplicate_urls(matches: list[str]) -> set[str]:
         if url_clean:
             cleaned_matches.append(url_clean)
 
-    final_matches = set()
+    final_matches: set[str] = set()
     for m in cleaned_matches:
         is_duplicate = False
         if not m.startswith(("http://", "https://")):
@@ -122,7 +121,7 @@ def _filter_and_deduplicate_urls(matches: list[str]) -> set[str]:
     return final_matches
 
 
-def _scan_string_pool(dx, attributed_urls: dict[str, set[str]]) -> None:
+def _scan_string_pool(dx: Any, attributed_urls: dict[str, set[str]]) -> None:
     """Scans the DEX string pool for HTTP/HTTPS URLs and attributes them to owners.
 
     Args:
@@ -136,7 +135,7 @@ def _scan_string_pool(dx, attributed_urls: dict[str, set[str]]) -> None:
         if "/" not in val:
             continue
 
-        matches = HTTP_REGEX.findall(val) + PATH_REGEX.findall(val)
+        matches = _HTTP_RE.findall(val) + _PATH_RE.findall(val)
         if not matches:
             continue
 
@@ -163,7 +162,7 @@ def _scan_string_pool(dx, attributed_urls: dict[str, set[str]]) -> None:
                 attributed_urls[owner].add(url_clean)
 
 
-def _scan_class_annotations(dx, attributed_urls: dict[str, set[str]]) -> None:
+def _scan_class_annotations(dx: Any, attributed_urls: dict[str, set[str]]) -> None:
     """Scans class annotations for URLs (common in Retrofit endpoints or HTTP libraries).
 
     Args:
@@ -185,7 +184,7 @@ def _scan_class_annotations(dx, attributed_urls: dict[str, set[str]]) -> None:
 
             pkg = _get_package_context(cls.name)
             ann_string = str(annotations)
-            matches = HTTP_REGEX.findall(ann_string) + PATH_REGEX.findall(ann_string)
+            matches = _HTTP_RE.findall(ann_string) + _PATH_RE.findall(ann_string)
 
             if matches:
                 final_matches = _filter_and_deduplicate_urls(matches)
@@ -197,7 +196,7 @@ def _scan_class_annotations(dx, attributed_urls: dict[str, set[str]]) -> None:
             continue
 
 
-def extract_urls(dx):
+def extract_urls(dx: Any) -> dict[str, list[str]]:
     """Extracts URLs from DEX string pools and class annotations.
 
     Attributes each URL to the package or third-party library context that references it.
@@ -209,7 +208,7 @@ def extract_urls(dx):
         dict[str, list[str]]: A mapping of owning package prefixes to sorted lists of
         attributed URLs.
     """
-    attributed_urls = {}
+    attributed_urls: dict[str, set[str]] = {}
     _scan_string_pool(dx, attributed_urls)
     _scan_class_annotations(dx, attributed_urls)
     return {owner: sorted(urls) for owner, urls in attributed_urls.items()}

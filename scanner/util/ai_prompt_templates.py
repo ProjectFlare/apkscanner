@@ -1,236 +1,336 @@
 """Prompt templates for mobile application security report generation.
 
-Used by the AI static analysis scanner modules to query local LLMs.
+Used by the AI static analysis scanner modules to query local LLMs via the
+agentic tool-calling loop in ``tool_runner``.
+
+The templates deliberately avoid em/en dashes and rare jargon: local models mirror
+the vocabulary and punctuation of their prompts, so the style rules enforced on the
+report output are also followed in the prompt text itself.
 """
 
-SYSTEM_PROMPT = (
+SYSTEM_PROMPT_TEMPLATE = (
     "You are an expert mobile application security analyst. "
-    "You MUST output all your internal reasoning, step-by-step thinking, and decision-making process "
-    "strictly inside <think>...</think> tags. Do not write any reasoning or planning outside of the "
-    "thinking tags. Provide only the final, clean, formatted markdown report content outside of the "
-    "thinking tags, starting directly with the requested headings or content."
+    "Today's date is __CURRENT_DATE__. Your own training data is older than that, so treat any "
+    "date, version number, or 'latest release' you remember as outdated until a tool result confirms it.\n\n"
+    "Critical Rules:\n"
+    "1. TOOL VERIFICATION: Never rely on memory for version numbers, CVE severities, or CVSS scores. "
+    "Verify them using lookup_maven_version, lookup_osv_vulnerabilities, or lookup_nvd_cve. "
+    "Use web_search selectively for domain reputation or remediation guidance, within a budget of at most "
+    "10 queries. Results come from a curated allowlist of trusted sites. Prefer the MOST RECENT results. "
+    "NEVER add a year or date to a web_search query; search the bare topic. "
+    "A source URL is ONLY valid if returned verbatim inside a tool result; never invent or guess URLs.\n"
+    "2. EVIDENCE GROUNDING: Every factual claim about exposed data or behaviour MUST be strictly supported "
+    "by the concrete evidence in the findings. A detected flag (for example allowBackup, usesCleartextTraffic, "
+    "debuggable) proves only that the flag is set, never which specific data is affected. If impact depends "
+    "on unverified data, state it conditionally.\n"
+    "3. ACTION-FIRST WRITING: State the bottom-line verdict or primary action first, followed by a concise "
+    "1-2 sentence technical explanation. Let sentences flow naturally, and do not use em or en dashes.\n"
+    "4. TOOL CALLING: During tool-calling turns output ONLY the tool call, with no conversational text.\n"
+    "5. STRICT JSON OUTPUT: Your final response must be a single valid JSON object matching the requested "
+    "schema. Do not wrap in markdown fences or output text outside the JSON object."
+)
+
+# JSON output schema reference strings (embedded in section prompts)
+FINDINGS_SCHEMA = (
+    "Output a single JSON object matching this exact schema:\n"
+    "{\n"
+    '  "no_findings": false,\n'
+    '  "findings": [\n'
+    "    {\n"
+    '      "title": "<Descriptive finding name referencing the concrete artifact named in the findings>",\n'
+    '      "risk": "<Action-First verdict and severity impact first, followed by a concise 1-2 sentence technical risk grounded strictly in the evidence; describe any unverified impact conditionally>",\n'
+    '      "attack_vector": "<Direct threat model and preconditions first, followed by concise steps an attacker would take, consistent with the evidence>",\n'
+    '      "developer_intent": "<The logical engineering reason this ended up in the app, reasoned from the APP developer\'s perspective. If in a third-party dependency, explain why the app developer included that library>",\n'
+    '      "remediation": "<Actionable, step-by-step developer remediation instructions>",\n'
+    '      "code_snippet": "<Targeted code-level fix (XML config or Kotlin/Java, under ~20 lines; raw code only, do not wrap in markdown code fences or backticks). If no direct code fix is applicable (such as when issue is inside a third-party dependency, requires library updates, or is an architectural recommendation), set to null>",\n'
+    '      "code_language": "<lowercase language identifier for syntax highlighting, such as kotlin, java, xml, or empty string if code_snippet is null>",\n'
+    '      "sources": [{"url": "<official documentation or CVE advisory URL from tool results>", "description": "<A few words describing what this page shows>"}]\n'
+    "    }\n"
+    "  ]\n"
+    "}\n"
+    'If there are no security risks, output: {"no_findings": true, "findings": []}'
+)
+
+SECRETS_SCHEMA = (
+    "Output a single JSON object matching this exact schema:\n"
+    "{\n"
+    '  "no_findings": false,\n'
+    '  "findings": [\n'
+    "    {\n"
+    '      "title": "<Secret type and identifier from findings>",\n'
+    '      "risk": "<Action-First severity verdict first, followed by 1-2 sentences stating the EXACT unmasked secret value and potential exposure risk>",\n'
+    '      "attack_vector": "<How an attacker extracts and abuses this credential from the decompiled APK>",\n'
+    '      "developer_intent": "<Why this key was embedded in client code, noting if it is a public identifier or backend secret>",\n'
+    '      "remediation": "<Key rotation, server-side migration, and scoping steps>",\n'
+    '      "sources": [{"url": "<official API security documentation URL>", "description": "<Source description>"}]\n'
+    "    }\n"
+    "  ]\n"
+    "}\n"
+    'If there are no secrets, output: {"no_findings": true, "findings": []}'
+)
+
+SIGNATURES_SCHEMA = (
+    "Output a single JSON object matching this exact schema:\n"
+    "{\n"
+    '  "no_findings": false,\n'
+    '  "findings": [\n'
+    "    {\n"
+    '      "title": "<Weak Signature Algorithm | Debug Certificate>",\n'
+    '      "risk": "<Action-First verdict first, followed by 1-2 sentences on APK signature verification and collision risks>",\n'
+    '      "attack_vector": "<How an attacker could exploit weak hashes or debug signing>",\n'
+    '      "developer_intent": "<Why this signing configuration was used, such as legacy build scripts or debug builds>",\n'
+    '      "remediation": "<Concrete steps to re-sign using APK Signature Scheme v2/v3 and SHA-256>",\n'
+    '      "code_snippet": "<Targeted build configuration fix (such as Gradle signingConfigs, under ~20 lines; raw code only, do not wrap in markdown code fences or backticks). If no direct code fix is applicable, set to null>",\n'
+    '      "code_language": "<lowercase language identifier for syntax highlighting, such as groovy, kotlin, or empty string if code_snippet is null>",\n'
+    '      "sources": [{"url": "https://source.android.com/docs/security/features/apksigning", "description": "Android APK Signature Scheme documentation"}]\n'
+    "    }\n"
+    "  ]\n"
+    "}\n"
+    'If there are no signature risks, output: {"no_findings": true, "findings": []}'
+)
+
+INFORMATIONAL_SCHEMA = (
+    "Output a single JSON object matching this exact schema:\n"
+    "{\n"
+    '  "no_findings": false,\n'
+    '  "items": [\n'
+    "    {\n"
+    '      "finding": "<The observation\'s title from the findings>",\n'
+    '      "evidence": ["<All exact artifacts from this item\'s evidence: class names, deep-link schemes, root indicators, or components>"],\n'
+    '      "detail": "<Action-First posture verdict first, followed by 1-2 sentences explaining what this construct is and its role in this app, assessing all evidence items>",\n'
+    '      "recommendation": "<Core action first, followed by what to verify, or state plainly if expected>",\n'
+    '      "sources": [{"url": "<official Android developer doc URL from tool results or standard reference>", "description": "<Source description>"}]\n'
+    "    }\n"
+    "  ]\n"
+    "}\n"
+    'If there are no items found, output: {"no_findings": true, "items": []}'
+)
+
+PERMISSIONS_SCHEMA = (
+    "Output a single JSON object matching this exact schema:\n"
+    "{\n"
+    '  "no_findings": false,\n'
+    '  "items": [\n'
+    "    {\n"
+    '      "name": "<exact permission string from findings>",\n'
+    '      "group": "<runtime_requested | install_time_or_system | custom_or_third_party>",\n'
+    '      "description": "<1-2 sentences: what the permission allows and specific class/methods where called>",\n'
+    '      "verdict": "Safe (Expected)",\n'
+    '      "rationale": "<1-sentence technical explanation tied to the app\'s verified purpose>",\n'
+    '      "sources": [{"url": "<https://developer.android.com/reference/android/Manifest.permission#...>", "description": "Android Manifest.permission reference"}]\n'
+    "    }\n"
+    "  ]\n"
+    "}\n"
+    'If there are no permissions, output: {"no_findings": true, "items": []}'
+)
+
+DEPS_SCHEMA = (
+    "Output a single JSON object matching this exact schema:\n"
+    "{\n"
+    '  "no_findings": false,\n'
+    '  "items": [\n'
+    "    {\n"
+    '      "source_name": "<the EXACT dependency key from the findings, echoed verbatim>",\n'
+    '      "name": "<full Maven coordinate in group:artifact form or root library name>",\n'
+    '      "version_used": "<exact version from findings, or \'unknown\'>",\n'
+    '      "latest_version": "<the known_facts latest_version, else lookup tool result, or \'unknown\'>",\n'
+    '      "latest_version_url": "<the known_facts latest_version_url, else URL from lookup tool, or empty string>",\n'
+    '      "purpose": "<The library\'s functionality and role in this application>",\n'
+    "      \"vulnerabilities\": \"<If version_used is known: specific CVEs from known_facts or tool lookup, or 'No known vulnerabilities found'. If version_used is 'unknown': exactly the text 'Version unknown - not assessed'. NEVER state a CVE ID that did not come from known_facts or a tool result>\"\n"
+    "    }\n"
+    "  ]\n"
+    "}\n"
+    'If there are no dependencies, output: {"no_findings": true, "items": []}'
+)
+
+NETWORK_SCHEMA = (
+    "Output a single JSON object matching this exact schema:\n"
+    "{\n"
+    '  "no_findings": false,\n'
+    '  "cloud_services": [\n'
+    '    {"domain": "<domain from findings>", "assessment": "<Threat analysis and reputation check>", "is_developer_code": true, "sources": [{"url": "<url>", "description": "<Source description>"}]}\n'
+    "  ],\n"
+    '  "trackers_and_ads": [\n'
+    '    {"domain": "<domain from findings>", "assessment": "<Threat assessment, tracking capabilities, and privacy impact>", "is_developer_code": false, "sources": [{"url": "<url>", "description": "<Source description>"}]}\n'
+    "  ],\n"
+    '  "other": [\n'
+    '    {"domain": "<domain from findings>", "assessment": "<Domain reputation and connection justification>", "is_developer_code": false, "sources": [{"url": "<url>", "description": "<Source description>"}]}\n'
+    "  ]\n"
+    "}\n"
+    'If there are no network findings, output: {"no_findings": true, "cloud_services": [], "trackers_and_ads": [], "other": []}'
+)
+
+VULNS_SCHEMA = (
+    "Output a single JSON object matching this exact schema:\n"
+    "{\n"
+    '  "no_findings": false,\n'
+    '  "summary": "<2-3 sentence overall security posture summary of the application>",\n'
+    '  "findings": [\n'
+    "    {\n"
+    '      "owasp_id": "<OWASP category ID from findings>",\n'
+    '      "owasp_category": "<OWASP Mobile Top 10 category name from findings>",\n'
+    '      "vulnerability": "<Concise, descriptive security vulnerability name>",\n'
+    '      "severity": "<CRITICAL|HIGH|MEDIUM|LOW>",\n'
+    '      "cvss_score": "<CVSS v3 base score or null>",\n'
+    '      "cwe": "<CWE identifier and name matching the weakness>",\n'
+    '      "sources": [{"url": "<source URL from tool results>", "description": "<Source description>"}]\n'
+    "    }\n"
+    "  ]\n"
+    "}\n"
+    'If there are no vulnerabilities, output: {"no_findings": true, "summary": "", "findings": []}'
+)
+
+APP_CONTEXT_SCHEMA = (
+    "Output a single JSON object matching this exact schema:\n"
+    "{\n"
+    '  "app_name": "<name>",\n'
+    '  "developer": "<developer or company name>",\n'
+    '  "primary_purpose": "<Concise 1-sentence summary of the core function and category of the app>",\n'
+    '  "play_store_url": "https://play.google.com/store/apps/details?id=<package>",\n'
+    '  "official_website": "<URL or null>",\n'
+    '  "status": "<Active | Discontinued | Unknown>",\n'
+    '  "description": "<2-3 sentence paragraph describing user workflows, supported features, and cloud integrations in neutral, third-person prose. Never copy marketing wording or rhetorical questions>",\n'
+    '  "security_incidents": [\n'
+    "    {\n"
+    '      "summary": "<What happened, in 1-2 factual sentences>",\n'
+    '      "date": "<YYYY-MM or YYYY-MM-DD>",\n'
+    '      "relation": "<mobile_app | backend | connected_infrastructure>",\n'
+    '      "impact": "<Affected users and adoption decision impact>",\n'
+    '      "source_url": "<trusted news source URL returned verbatim by a tool>"\n'
+    "    }\n"
+    "  ],\n"
+    '  "sources": [{"url": "<real source URL from tool result or official listing>", "description": "<Source description>"}]\n'
+    "}\n"
+    'If no information is found, output: {"app_name": null, "developer": null, "primary_purpose": "No information found.", '
+    '"play_store_url": null, "official_website": null, "status": "Unknown", "description": "No information about this application could be found online.", "security_incidents": [], "sources": []}'
 )
 
 PERMISSIONS_PROMPT_TEMPLATE = (
-    "You are an expert mobile application security analyst. Perform an audit of the 'Permissions' findings for the application.\n\n"
-    "Application Context:\n{app_context_summary}\n\n"
-    "Static Analysis Findings:\n{data_json}\n\n"
+    "Audit the following Android permissions for the application using the following data:\n\n"
+    "Application Context:\n__APP_CONTEXT__\n\n"
+    "Permissions to Audit:\n__DATA_JSON__\n\n"
     "Instructions:\n"
-    "- STRICT AUDIT RULE: You must ONLY audit and report findings that are explicitly present in the provided Static Analysis Findings. Do not speculate, extrapolate, or invent hypothetical security risks that are not backed up by specific values in the findings.\n"
-    "- Do not echo, repeat, or summarize the application context/description at the beginning of the output. Start directly with the permission groups.\n"
-    "- If there are no permissions requested, output exactly 'NO_SECURITY_RISKS'. Do not output any other text.\n"
-    "- Group the permissions into the three categories present in the findings:\n"
-    "  1. 'Runtime Requested Permissions (Dangerous)'\n"
-    "  2. 'Install-time or System Permissions'\n"
-    "  3. 'Custom or Third-Party Permissions'\n"
-    "- Output ### sub-headings for each category.\n"
-    "- Format each permission in the list strictly using this structure:\n"
-    "  - **[permission_name]** (using full Android permission name, e.g. `android.permission.ACCESS_FINE_LOCATION`)\n"
-    "    - **What it allows**: <Detailed explanation of what access or capability this grants under Android's security model.>\n"
-    "    - **Where it is used**: <List the exact packages, classes, and methods referencing it from the findings, or 'no specific references' if empty.>\n"
-    "    - **Why it is used & Justification**: <Contextual justification of why this is needed for this specific application based on the App Description, and whether it presents a security/privacy concern.>\n"
-    "- Do not use standard subheadings like 'What is the risk?', 'What is the attack vector?', etc. Just output the clean grouped list directly.\n"
-    "- Do not include introductory text, notes, or concluding guidelines.\n\n"
-    "CRITICAL: Do not include any notes, footnotes, explanations, references, or instructions about 'NO_SECURITY_RISKS' in the output. Just output the content directly."
+    "- Set each item's 'group' to runtime_requested, install_time_or_system, or custom_or_third_party.\n"
+    "- For each permission, explain what it allows on Android and where it is used, naming the provided call sites/classes.\n"
+    "- If a permission has no call sites listed, note that it is a manifest-level declaration.\n"
+    "- Set 'verdict' to 'Safe (Expected)', 'Potentially Risky', or 'Unnecessary/Legacy', and provide a 1-sentence technical rationale.\n"
+    "- Set 'sources' to the official Android Manifest.permission reference URL.\n\n" + PERMISSIONS_SCHEMA
 )
 
 DEPENDENCIES_PROMPT_TEMPLATE = (
-    "You are an expert mobile application security analyst. Perform an audit of the 'Dependencies' list for the application.\n\n"
-    "Application Context:\n{app_context_summary}\n\n"
-    "Static Analysis Findings:\n{data_json}\n\n"
-    "Threat Intelligence Snippets:\n{search_context}\n\n"
+    "Audit the 'Dependencies' for the application using the following data:\n\n"
+    "Application Context:\n__APP_CONTEXT__\n\n"
+    "Dependency Group Context: __DEP_GROUP_LABEL__\n\n"
+    "Static Analysis Findings:\n__DATA_JSON__\n\n"
     "Instructions:\n"
-    "- STRICT AUDIT RULE: You must ONLY audit and report findings that are explicitly present in the provided Static Analysis Findings. Do not speculate, extrapolate, or invent hypothetical security risks that are not backed up by specific values in the findings.\n"
-    "- Do not echo, repeat, or summarize the application context/description at the beginning of the output. Start directly with the dependency list.\n"
-    "- If there are no dependencies found, output exactly 'NO_SECURITY_RISKS'. Do not output any other text.\n"
-    "- List all third-party dependencies from `exact_versions_found.third_party`.\n"
-    "- Format each dependency in the list strictly using this structure:\n"
-    "  - **[dependency_name]** (using full group and artifact name, e.g. `com.google.dagger:dagger`)\n"
-    "    - **Version Used**: <The exact version string found in the findings.>\n"
-    "    - **Latest Available**: <The newest version string found in the threat intelligence snippets (along with its Markdown source link), or 'unknown' if not present in the snippets.>\n"
-    "    - **Purpose & Core Functionality**: <Thorough explanation of what this library does and why the developer integrated it into the app based on the App Description.>\n"
-    "    - **Security & Vulnerabilities**: <List any CVEs, security risks, or warnings found in threat intelligence search snippets, or 'No vulnerabilities found in online threat intelligence search results' if none. You MUST include markdown source links next to the vulnerability info. Do NOT write generic fallback messages.>\n"
-    "- Do not use standard 4-subheading format. Provide a clean bulleted list.\n"
-    "- Do not include introductory text, notes, or concluding guidelines.\n\n"
-    "CRITICAL: Do not include any notes, footnotes, explanations, references, or instructions about 'NO_SECURITY_RISKS' in the output. Just output the content directly."
+    "- The findings map third-party dependency names to their version details (version_used, latest_version, latest_version_url, osv_findings).\n"
+    "- Output exactly one item for EVERY entry in the provided mapping. Never skip or drop an entry.\n"
+    "- Set every item's 'source_name' to the exact findings key it corresponds to, echoed verbatim.\n"
+    "- Copy the provided version_used, latest_version, and latest_version_url straight into the output; do NOT call lookup_maven_version or lookup_osv_vulnerabilities for entries that already contain these values.\n"
+    "- If osv_findings are listed, summarize each CVE. If osv_findings is empty and version_used is known, state 'No known vulnerabilities found for this version by the OSV.dev batch check'.\n"
+    "- For unversioned libraries (version_used is null or 'unknown'), set version_used and latest_version to 'unknown' and vulnerabilities to 'Version unknown - not assessed': a CVE cannot be attributed without a version, and recalling one from memory produces errors.\n\n"
+    + DEPS_SCHEMA
 )
 
 SECRETS_PROMPT_TEMPLATE = (
-    "You are an expert mobile application security analyst. Audit the 'Secrets' found in the application.\n\n"
-    "Application Context:\n{app_context_summary}\n\n"
-    "Static Analysis Findings:\n{data_json}\n\n"
+    "Audit the 'Secrets' found in the application using the following data:\n\n"
+    "Application Context:\n__APP_CONTEXT__\n\n"
+    "Static Analysis Findings:\n__DATA_JSON__\n\n"
     "Instructions:\n"
-    "- STRICT AUDIT RULE: You must ONLY audit and report findings that are explicitly present in the provided Static Analysis Findings. Do not speculate, extrapolate, or invent hypothetical security risks that are not backed up by specific values in the findings.\n"
-    "- Do not echo, repeat, or summarize the application context/description at the beginning of the output. Start directly with the secrets findings.\n"
-    "- If there are no secrets or credentials found in the findings, output exactly 'NO_SECURITY_RISKS'. Do not output any other text.\n"
-    "- For each secret found, create a finding entry using the following structure:\n\n"
-    "### <Secret Finding Name> (e.g. Exposed Google API Key)\n\n"
-    "#### What is the risk?\n"
-    "<Explain the risk in detail.>\n\n"
-    "#### What is the attack vector?\n"
-    "<Explain the attack vector.>\n\n"
-    "#### Why is it possibly implemented like that?\n"
-    "<Explain developer intent.>\n\n"
-    "#### How can the developer fix it?\n"
-    "<Explain remediation steps.>\n\n"
-    "- CRITICAL: In each finding, you MUST explicitly name the secret variable/attribute (the 'name' key in the findings, e.g. `google_api_key`), explain its source (the 'source' key in the findings), and output the exact unmasked secret value in full (the 'value' key in the findings, e.g. '<secret_value>'). Do not mask or truncate it.\n"
-    "- Do not include introductory text, notes, or concluding guidelines.\n\n"
-    "CRITICAL: Do not include any notes, footnotes, explanations, references, or instructions about 'NO_SECURITY_RISKS' in the output. Just output the content directly."
+    "- Each item in the findings represents a detected secret or a consolidated group of keys sharing the same origin or variable name.\n"
+    "- Evaluate each item as a single consolidated assessment covering all associated values and locations.\n"
+    "- In the 'risk' field, state the Action-First severity verdict and print all exact unmasked values.\n"
+    "- Detail the attack vector, developer intent, and server-side remediation steps.\n\n" + SECRETS_SCHEMA
 )
 
 NETWORK_PROMPT_TEMPLATE = (
-    "You are an expert mobile application security analyst. Audit the 'Network' findings for the application.\n\n"
-    "Application Context:\n{app_context_summary}\n\n"
-    "Static Analysis Findings:\n{data_json}\n\n"
-    "Threat Intelligence Snippets:\n{search_context}\n\n"
+    "Audit the 'Network' findings for the application using the following data:\n\n"
+    "Application Context:\n__APP_CONTEXT__\n\n"
+    "Static Analysis Findings:\n__DATA_JSON__\n\n"
     "Instructions:\n"
-    "- STRICT AUDIT RULE: You must ONLY audit and report findings that are explicitly present in the provided Static Analysis Findings. Do not speculate, extrapolate, or invent hypothetical security risks that are not backed up by specific values in the findings.\n"
-    "- Do not echo, repeat, or summarize the application context/description at the beginning of the output. Start directly with the network domains.\n"
-    "- If there are no network findings or domains found, output exactly 'NO_SECURITY_RISKS'. Do not output any other text.\n"
-    "- List the network domains from categorized_domains.\n"
-    "- Group them under '### Cloud Services', '### Trackers and Ads', and '### Other' sub-headings. Do not write double hashes or duplicate heading symbols.\n"
-    "- For each domain, explain what it is used for and if it is safe or a false positive threat.\n"
-    "- You MUST look up the domain in the `attributed_urls` data in the findings. List the exact URLs found and the packages/classes referencing them (e.g. `dev-helpme-api.muenchen.de` is referenced by `de.muenchen.appcenter` for URLs `https://dev-helpme-api.muenchen.de`, etc.).\n"
-    "- Determine and state whether each domain/URL is manually used in the developer's code or automatically bundled by third-party dependencies. Use this rule: if the class/package referencing the URL starts with the app's own packages (e.g., starts with `de.muenchen.appcenter`), it is manually used by the developer. If it starts with anything else (e.g., `androidx.*`, `com.google.firebase.*`, `com.bumptech.glide.*`, `io.opentelemetry.*`, `com.squareup.*`), it comes bundled with dependencies automatically.\n"
-    "- Do not include introductory text, notes, or concluding guidelines.\n"
-    "CRITICAL: Do not include any notes, footnotes, explanations, references, or instructions about 'NO_SECURITY_RISKS' in the output. Just output the content directly."
+    "- Provide an assessment for every single domain present in the findings; never drop or omit any domain.\n"
+    "- Only report domains present in findings.\n"
+    "- Attribute each domain to developer or third-party code based on referencing packages.\n"
+    "- Assess reputation and group into cloud_services, trackers_and_ads, and other.\n\n" + NETWORK_SCHEMA
 )
 
 VULNERABILITIES_PROMPT_TEMPLATE = (
-    "You are an expert mobile application security analyst. Audit the 'Vulnerabilities' list for the application "
-    "and map them to the OWASP Mobile Top 10 security standards.\n\n"
-    "Application Context:\n{app_context_summary}\n\n"
-    "Static Analysis Findings:\n{data_json}\n\n"
-    "Threat Intelligence Snippets:\n{search_context}\n\n"
+    "Audit the 'Vulnerabilities' for the application using the following data:\n\n"
+    "Application Context:\n__APP_CONTEXT__\n\n"
+    "Static Analysis Findings:\n__DATA_JSON__\n\n"
     "Instructions:\n"
-    "- STRICT AUDIT RULE: You must ONLY audit and report findings that are explicitly present in the provided Static Analysis Findings. Do not speculate, extrapolate, or invent hypothetical security risks that are not backed up by specific values in the findings.\n"
-    "- Do not echo, repeat, or summarize the application context/description at the beginning of the output. Start directly with the OWASP vulnerabilities table.\n"
-    "- If there are no vulnerabilities or concerns found, output exactly 'NO_SECURITY_RISKS'. Do not output any other text.\n"
-    "- Instead of writing detailed descriptions, risks, attack vectors, or remediations for each vulnerability, generate a clean Markdown table summarizing the findings mapped to OWASP.\n"
-    "- The table MUST contain these exact columns:\n"
-    "  1. **OWASP Category** (e.g. `M1: Improper Credential Usage` or `M3: Insecure Data Storage` or `M4: Insecure Communication` or `M5: Inadequate Platform Interaction` or `M6: Inadequate Security Controls` or `M7: Insufficient Binary Protection` or `M8: Security Decisions Via Untrusted Inputs`)\n"
-    "  2. **Vulnerability** (e.g. `Hardcoded Google API Key` or `App Data Backup Enabled` or `Cleartext Traffic Configuration` or `Unprotected Exported Components` or `Application compiles in debug mode` or `Weak signing certificate` or `Unsafe WebView settings` or `Insecure Cryptographic Mode` or `Custom Scheme Intents`)\n"
-    "  3. **Severity** (e.g. `HIGH`, `MEDIUM`, `LOW`)\n"
-    "  4. **Technical Details Link** (A Markdown link pointing to the section where this vulnerability's details are located, e.g. `[View Details](#exposed-google-api-key)`, `[View Details](#1-allow-backup-enabled)`, `[View Details](#2-uses-cleartext-traffic)`, etc. Note that the headers in Sections 1-7 start with a number like '### 1. Allow Backup Enabled', so the anchor is '#1-allow-backup-enabled'.)\n"
-    "- Under the table, write a short 2-3 sentence overview explaining how the overall security posture is affected by these findings.\n"
-    "- Do not include any introductory or concluding text, notes, or instructions.\n\n"
-    "CRITICAL: Do not include any notes, footnotes, explanations, references, or instructions about 'NO_SECURITY_RISKS' in the output. Just output the content directly."
+    "- Report every finding in the data; never drop one.\n"
+    "- Echo the OWASP Mobile Top 10 category and MASVS identifiers provided in the findings.\n"
+    "- Provide the standard CWE identifier and weakness name matching the evidence.\n"
+    "- When evidence points strictly to third-party library internals, lower severity to LOW and explain from the evidence rather than from any assumption.\n\n"
+    + VULNS_SCHEMA
 )
 
-# Shared prompt template for standard 4-subheading format
 STANDARD_SECTION_PROMPT_TEMPLATE = (
-    "You are an expert mobile application security analyst. Perform an audit of the '{section_name}' findings "
-    "for the application, utilizing any provided threat intelligence search context.\n\n"
-    "Application Context:\n{app_context_summary}\n\n"
-    "Static Analysis Findings:\n{data_json}\n\n"
-    "Threat Intelligence Snippets:\n{search_context}\n\n"
-    "Specific Section Guidelines:\n{section_guidelines}\n\n"
+    "Audit the '__SECTION_NAME__' findings for the application using the following data:\n\n"
+    "Application Context:\n__APP_CONTEXT__\n\n"
+    "Static Analysis Findings:\n__DATA_JSON__\n\n"
+    "Specific Section Guidelines:\n__GUIDELINES__\n\n"
     "Instructions:\n"
-    "- STRICT DATA BOUNDING: Every single ### finding you write MUST correspond to a specific, concrete security concern present in the 'Static Analysis Findings' JSON data. You must NOT write more findings than the number of issues present in the findings data. For example, if there are only 5 concerns in the JSON findings, you must output exactly 5 findings, and no more. Do NOT invent or add generic findings (such as 'Missing Security Training', 'Missing Regular Security Audits', 'Insecure Data Storage', 'Code Obfuscation', 'Session Expiration', or other general advice) that are not explicitly present as raw findings in the JSON data.\n"
-    "- Do not echo, repeat, or summarize the application context/description at the beginning of the output. Start directly with the findings.\n"
-    "- Keep descriptions, attack vectors, and remediations concise and focused to stay within response token limits.\n"
-    "- If there are no security risks, privacy concerns, vulnerabilities, or weaknesses found, output exactly 'NO_SECURITY_RISKS'. Do not output any other text.\n"
-    "- If there are concerns, analyze them. For each concern, use the following uniform structure. Do NOT include any main section headers (like ## {section_name}); start directly with ### 1. <Problem Name>:\n\n"
-    "### 1. <Problem Name>\n\n"
-    "#### What is the risk?\n"
-    "<Explain why this is a risk/weakness briefly.>\n\n"
-    "#### What is the attack vector?\n"
-    "<Explain how an attacker could exploit this in a real-world scenario.>\n"
-    "If helpful to illustrate complex trust boundaries or transitions, you may include a clean, minimalist Mermaid.js flowchart (using 'graph LR' or 'graph TD') directly below this explanation. Do not add flowcharts for trivial findings.\n\n"
-    "#### Why is it possibly implemented like that?\n"
-    "<Explain the likely developer intent or purpose of this item/finding in the context of this app.>\n\n"
-    "#### How can the developer fix it?\n"
-    "<Provide clear, actionable recommendations on how to remediate the issue.>\n"
-    "If applicable, include a concrete, copy-pasteable configuration or code snippet (e.g. XML or Java/Kotlin snippet) showing the exact remediated state directly below this text.\n\n"
-    "Increment the counter (### 2. <Problem Name>, etc.) for subsequent findings. Analyze each concern sequentially. For each concern, you MUST output its heading (e.g. '### 1. Allow Backup Enabled') followed immediately by its four subheadings (#### What is the risk?, #### What is the attack vector?, #### Why is it possibly implemented like that?, and #### How can the developer fix it?) before writing the next concern's heading. Do NOT list multiple headings together first; each finding must be fully described with all four subheadings before the next heading is started.\n\n"
-    "- Do not use horizontal rules (---) or other separators between the findings. Just output them sequentially.\n"
-    "- Do not include any introductory text, summary, conclusion, wrap-up, or general statements at the end of the output. End immediately after the last finding.\n"
-    "- CRITICAL: For any secrets, credentials, or API keys, you MUST output the exact string value in full (e.g. '<secret_value>') fully visible, without any masking, truncation, or editing.\n\n"
-    "- CRITICAL: Do not include any notes, footnotes, explanations, references, or instructions about 'NO_SECURITY_RISKS' in the output. Just output the content directly."
+    "- Every finding MUST correspond to a specific issue in the provided findings.\n"
+    "- For any CVE: call lookup_nvd_cve(cve_id) to get the CVSS v3 score.\n"
+    "- Provide actionable remediation. Provide targeted code snippets where application code can be modified, or set code_snippet to null if the issue is in a third-party dependency with no direct code fix (do not generate comment-only placeholder snippets).\n"
+    "- Place all code fixes in 'code_snippet' with 'code_language'. Do not paste raw unfenced code blocks into 'remediation'.\n\n"
+    + FINDINGS_SCHEMA
 )
 
-# Prompt template for flat-list formatted sections (Permissions, Dependencies, Network/Domains)
-LIST_SECTION_PROMPT_TEMPLATE = (
-    "You are an expert mobile application security analyst. Perform an audit of the '{section_name}' list for the application, "
-    "utilizing any provided threat intelligence search context.\n\n"
-    "Application Context:\n{app_context_summary}\n\n"
-    "Static Analysis Findings:\n{data_json}\n\n"
-    "Threat Intelligence Snippets:\n{search_context}\n\n"
-    "Specific Section Guidelines:\n{section_guidelines}\n\n"
-    "Instructions:\n"
-    "- STRICT AUDIT RULE: You must ONLY audit and report findings that are explicitly present in the provided Static Analysis Findings. Do not speculate, extrapolate, or invent hypothetical security risks that are not backed up by specific values in the findings.\n"
-    "- Do not echo, repeat, or summarize the application context/description at the beginning of the output. Start directly with the list.\n"
-    "- Provide a clean markdown list (using bullet points) of ALL items found in the static analysis findings for this section.\n"
-    "- Name each item clearly using its full name.\n"
-    "- Under each category (if grouped/categorized in guidelines), provide a flat bullet point list.\n"
-    "- Provide a short description for each explaining: (1) what it is used for in the context of this specific app, and (2) whether it is safe, potentially risky, or a false positive threat.\n"
-    "- Focus on reducing false positives. Do not flag standard/necessary items as vulnerabilities without justification.\n"
-    "- Do not use the subheadings 'What is the risk?', 'What is the attack vector?', etc. Do not include any introductory or concluding text, notes, or instructions.\n"
-    "- Do not use horizontal rules (---) or other separators within the output.\n"
-    "- Do not include any introductory text, summary, conclusion, wrap-up, or general statements at the end of the output. End immediately after the last item.\n\n"
-    "CRITICAL: Do not include any notes, footnotes, explanations, references, or instructions about 'NO_SECURITY_RISKS' in the output. Just output the content directly."
-)
-
-# Prompt template used for Application Overview generation
 APP_CONTEXT_PROMPT_TEMPLATE = (
-    "You are an expert mobile application security analyst. Based on the following web search snippets, "
-    "generate a standardized Application Overview. Your output must strictly follow this exact template and structure:\n\n"
-    "### Application Overview\n\n"
-    "| **Detail** | **Value** |\n"
-    "| :--- | :--- |\n"
-    "| **App Name** | <Name of the application> |\n"
-    "| **Developer** | <Name of developer/company> |\n"
-    "| **Primary Purpose** | <A few sentences summarizing the core functionality and most important details about what the app does> |\n"
-    "| **Google Play Link** | [Google Play Store](https://play.google.com/store/apps/details?id={package}) |\n"
-    "| **Official Website** | <Standard markdown link to official website or support page> |\n"
-    "| **Status** | <Active / Discontinued / Replaced> |\n\n"
-    "### Description\n"
-    "<A clean, comprehensive 2-3 sentence paragraph explaining what the app is, who it is built for, its core functionality, and how it fits into the developer's services (always citing source links/URLs from the snippets).>\n\n"
-    "If the search snippets contain no relevant information about this specific application (e.g. they only refer "
-    "to general news or unrelated topics), write exactly: 'No information about this application could be found online.' "
-    "Do not make up or hallucinate any details.\n\n"
-    "Search snippets:\n{context_text}\n"
+    "Gather metadata for the Android app named '__KNOWN_APP_NAME__' (package ID: __PACKAGE__).\n\n"
+    "Build environment detected by static analysis: __UI_FRAMEWORK__.\n\n"
+    "Verified Play Store metadata:\n__PLAYSTORE_METADATA__\n\n"
+    "Instructions:\n"
+    "1. Use the verified Play Store metadata above. If empty, call lookup_play_store('__PACKAGE__').\n"
+    "2. If needed, call web_search to discover the official website or verify active status.\n"
+    "3. Write primary_purpose as a concise 1-sentence summary, and description as a 2-3 sentence paragraph in neutral prose.\n"
+    "4. Assess security incidents strictly as an ADOPTION-RISK question. Search trusted news for material security incidents "
+    "reported by a trusted source on or after __INCIDENT_CUTOFF_DATE__. If none, output an empty security_incidents array.\n"
+    "5. Populate the 'sources' array with all retrieved URLs.\n\n" + APP_CONTEXT_SCHEMA
 )
 
 MANIFEST_AUDIT_GUIDELINES = (
-    "- Audits security configurations inside AndroidManifest.xml (e.g. debuggable, allowBackup, usesCleartextTraffic).\n"
-    "- For each finding, the remediation recommendation MUST be an XML configuration change inside AndroidManifest.xml.\n"
-    "- Only report on findings that are explicitly present in the provided JSON data. If a specific "
-    "flag or configuration (e.g., allow_backup, debuggable, uses_cleartext_traffic) is missing or not present in the filtered JSON findings, DO NOT "
-    "mention, reference, or audit it in the report.\n"
-    "- DO NOT invent or add general findings (such as 'Missing Security Training', 'Missing Regular "
-    "Security Audits', 'Insecure Data Storage', 'Code Obfuscation', 'Session Expiration', or other "
-    "general advice).\n"
-    "- DO NOT report 'Static Analysis Not Blocked' or similar positive flags as issues. Only report "
-    "static analysis if it IS blocked or a packer is detected."
-)
-
-SECURITY_CHECKS_GUIDELINES = (
-    "- Audits code-level runtime security checks (such as rooted device detection, emulator detection, and developer options status) as well as exported components and custom intent schemes.\n"
-    "- For each finding, the recommendation MUST be Java/Kotlin source code changes to check these capabilities at runtime (e.g. using RootBeer for root detection, or checking system settings for developer mode).\n"
-    "- Avoid suggesting outdated, naive, or easily-bypassed checks (for rooted device detection, do not suggest checking only `/system/bin/su` which is bypassed by modern root-hiding managers; instead, recommend industry-standard libraries like RootBeer `com.scottyab:rootbeer-lib` with modern detection logic).\n"
-    "- Only report on findings that are explicitly present in the provided JSON data. If a check (e.g. rooted_device_detection) is not present as a finding, DO NOT mention it."
+    "- Audits security configurations inside AndroidManifest.xml.\n"
+    "- For findings requiring manifest changes, provide a targeted, valid XML remediation snippet ready to insert into AndroidManifest.xml (or set code_snippet to null if not applicable).\n"
+    "- For allowBackup: state exposure conditionally unless private storage data findings exist. "
+    "It does not expose Keystore keys or biometric data, which are system-managed. "
+    "Note android:fullBackupContent or android:dataExtractionRules scoping.\n"
+    "- Do not invent generic findings or report positive security flags as issues."
 )
 
 SIGNATURES_GUIDELINES = (
-    "- Audit developer certificates and signature schemes.\n"
-    "- Note that this section is strictly about Android application signing certificates (used to sign "
-    "the APK for installation). It is NOT about network/transport layer security (SSL/TLS, HTTPS, or "
-    "web server certificates). Do not mention or audit network TLS/SSL, certificate authorities, "
-    "revocation checks, or server mismatches.\n"
-    "- DO NOT report self-signed certificates as a security risk. Self-signed certificates are "
-    "standard, expected, and required by design for all Android application packaging.\n"
-    "- Only report a risk if the certificate is a debug certificate (e.g. `is_debug_signed` is "
-    "`True`) or has a weak hash algorithm (e.g. `has_weak_hash` is `True`).\n"
-    "- Only report the debug-signed certificate or weak hash issue once. Do not split it into multiple "
-    "redundant findings."
+    "- Audits developer certificates and APK signature schemes (v1, v2, v3).\n"
+    "- Do not report self-signed certificates as a risk; they are standard on Android.\n"
+    "- Only report a risk if is_debug_signed is True or has_weak_hash is True.\n"
+    "- Provide targeted build configuration code snippets (such as Gradle signingConfigs, <20 lines; raw code without markdown backticks) under 'code_snippet', and keep 'remediation' as descriptive steps.\n"
+    '- If no signature risks exist, output {"no_findings": true, "findings": []}.'
 )
 
 BYTECODE_AUDIT_GUIDELINES = (
-    "- Audit Dalvik bytecode for insecure operations.\n"
-    "- You MUST name the exact files, classes, methods, or code paths where the issues were detected "
-    "(e.g., specifying that it was found in class `com.pslocks.sdk.data.cryptography.Cryptography` "
-    "method `cipher`).\n"
-    "- Do not describe the issue in the abstract; explicitly reference the class, method, or code "
-    "evidence from the static analysis findings so the developer knows exactly where it is coming from."
+    "- Audits Dalvik bytecode for insecure operations detected in the findings.\n"
+    "- Name the exact classes and methods where issues were detected.\n"
+    "- Consolidate identical vulnerability types: when multiple classes or methods exhibit the same weakness, combine them into a single consolidated finding that references all affected classes and methods, rather than creating separate duplicate findings.\n"
+    "- Report every detection in the data; never drop one. When findings point strictly to third-party library internals, "
+    "rate severity as LOW and explain from the evidence rather than from any assumption about libraries.\n"
+    "- Provide minimal, copy-pasteable Java/Kotlin replacement snippets (<20 lines; raw code without markdown backticks). "
+    "If an issue is entirely inside a third-party library or cannot be fixed by modifying application code, set code_snippet to null instead of generating placeholder comments."
+)
+
+INFORMATIONAL_GUIDELINES = (
+    "- Audits informational security-posture observations (exported components, custom deep links, root detection, dynamic code loading, legacy signature hardening).\n"
+    "- Output exactly one item for EVERY observation present in the findings; never skip or drop any observation. These do not affect the security score.\n"
+    "- In the 'evidence' list for each item, include all exact artifacts present in the findings for that observation; never truncate to only the top-most item.\n"
+    "- In 'detail', evaluate the entire set of evidence artifacts collectively to assess the overall security posture.\n"
+    "- State Action-First posture verdict in detail based on evidence, followed by concise technical context.\n"
+    "- Distinguish standard development tooling artifacts from actionable attack surface and state expected posture plainly."
+)
+
+INFORMATIONAL_PROMPT_TEMPLATE = (
+    "Audit the 'Informational' observations for the application using the following data:\n\n"
+    "Application Context:\n__APP_CONTEXT__\n\n"
+    "Static Analysis Findings:\n__DATA_JSON__\n\n"
+    "Instructions:\n" + INFORMATIONAL_GUIDELINES + "\n\n" + INFORMATIONAL_SCHEMA
 )

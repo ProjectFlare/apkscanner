@@ -28,6 +28,14 @@ scanner.util.json\_report module
    :show-inheritance:
    :undoc-members:
 
+scanner.util.pdf\_report module
+-------------------------------
+
+.. automodule:: scanner.util.pdf_report
+   :members:
+   :show-inheritance:
+   :undoc-members:
+
 scanner.util.rules module
 -------------------------
 
@@ -36,18 +44,18 @@ scanner.util.rules module
    :show-inheritance:
    :undoc-members:
 
-scanner.util.scraper module
----------------------------
-
-.. automodule:: scanner.util.scraper
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
 scanner.util.split\_apks module
 -------------------------------
 
 .. automodule:: scanner.util.split_apks
+   :members:
+   :show-inheritance:
+   :undoc-members:
+
+scanner.util.tool\_runner module
+--------------------------------
+
+.. automodule:: scanner.util.tool_runner
    :members:
    :show-inheritance:
    :undoc-members:
