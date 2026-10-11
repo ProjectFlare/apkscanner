@@ -30,3 +30,4 @@ docker-compose.yml
 
 # Demo script
 regenerate_reports.sh
+thesis/

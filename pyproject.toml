@@ -10,7 +10,7 @@ dependencies = [
     "json-repair",
     "loguru",
     "markdown-pdf",
-    "openai",
+    "openai<3",
     "requests",
     "sqlmodel",
     "tqdm",
