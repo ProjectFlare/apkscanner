@@ -23,6 +23,7 @@ from scanner.util.ai_report import (
     _failed_section_placeholder,
     _fallback_maven_url,
     _filter_network_data,
+    _filter_scan_report,
     _format_numbered_steps,
     _format_playstore_metadata_block,
     _format_report_header,
@@ -109,13 +110,13 @@ def test_calculate_security_score_deduplicates():
     assert calculate_security_score([vuln, vuln]) == calculate_security_score([vuln])
 
 
-def test_calculate_security_score_deepl_scenario():
-    """DeepL scenario: 0 vulnerabilities, but exported components, custom schemes, and missing config."""
+def test_calculate_security_score_hygiene_scenario():
+    """Clean app hygiene scenario: 0 vulnerabilities, but exported components, custom schemes, and missing config."""
     scan_report = {
         "vulnerabilities": [],
         "informational": [
             {"type": "exported_components", "title": "Exported Components Without Permission", "evidence": ["act1"]},
-            {"type": "custom_scheme_intents", "title": "Custom Scheme Deep Links", "evidence": ["deepl://app"]},
+            {"type": "custom_scheme_intents", "title": "Custom Scheme Deep Links", "evidence": ["custom://app"]},
         ],
         "manifest_audit": {
             "security_flags": {
@@ -580,8 +581,8 @@ def test_filter_scan_report_streamlines_certificates():
             "has_weak_hash": True,
             "certificates": [
                 {
-                    "subject": "CN=Adobe Systems Incorporated",
-                    "issuer": "CN=Adobe Systems Incorporated",
+                    "subject": "CN=Example Corporation",
+                    "issuer": "CN=Example Corporation",
                     "serial_number": "1234567890",
                     "sha256_fingerprint": "AA:BB:CC:DD",
                     "sha1_fingerprint": "11:22:33:44",
@@ -599,7 +600,7 @@ def test_filter_scan_report_streamlines_certificates():
     certs = filtered_sigs["certificates"]
     assert len(certs) == 1
     cert = certs[0]
-    assert cert["subject"] == "CN=Adobe Systems Incorporated"
+    assert cert["subject"] == "CN=Example Corporation"
     assert cert["signature_algo"] == "SHA1withRSA"
     assert cert["hash_algo"] == "SHA1"
     # Serial numbers, timestamps, and fingerprints are stripped to save prompt tokens
@@ -1762,24 +1763,78 @@ def test_filter_network_data_basic():
         "categorized_domains": {
             "cloud_services": ["firebase.google.com"],
             "trackers_and_ads": [],
-            "other": ["carsync.de"],
+            "other": ["example-service.org"],
         },
         "attributed_urls": {
-            "de.vispiron.carsync": [
-                "https://portal.carsync-log.de",
-                "https://www.carsync.de/ueber-uns",
+            "com.example.service": [
+                "https://portal.example-log.org",
+                "https://www.example-service.org/about",
             ],
             "com.google.firebase": ["firebase.google.com/privacy"],
         },
     }
     filtered = _filter_network_data(network)
     assert "firebase.google.com" in [d["domain"] for d in filtered["cloud_services"]]
-    assert "carsync.de" in [d["domain"] for d in filtered["other"]]
+    assert "example-service.org" in [d["domain"] for d in filtered["other"]]
 
     # Check mapping
     firebase_entry = next(d for d in filtered["cloud_services"] if d["domain"] == "firebase.google.com")
     assert "com.google.firebase" in firebase_entry["referencing_packages"]
     assert "firebase.google.com/privacy" in firebase_entry["urls"]
+
+    service_entry = next(d for d in filtered["other"] if d["domain"] == "example-service.org")
+    assert "com.example.service" in service_entry["referencing_packages"]
+    assert "https://www.example-service.org/about" in service_entry["urls"]
+
+
+def test_filter_network_data_www_prefix_and_subdomain_matching():
+    """_filter_network_data normalizes www. URLs and matches them to root domain findings."""
+    network = {
+        "categorized_domains": {
+            "cloud_services": [],
+            "trackers_and_ads": [],
+            "other": ["example-store.com", "example-partner.org"],
+        },
+        "attributed_urls": {
+            "com.example.app": [
+                "http://www.example-store.com/items?p=com.example.app",
+                "https://www.example-store.com/products/sample-item/",
+                "www.example-store.com/products/sample-item",
+                "http://www.example-partner.org",
+            ]
+        },
+    }
+    filtered = _filter_network_data(network)
+    store_entry = next(d for d in filtered["other"] if d["domain"] == "example-store.com")
+    assert "com.example.app" in store_entry["referencing_packages"]
+    assert len(store_entry["urls"]) == 3
+    assert "http://www.example-store.com/items?p=com.example.app" in store_entry["urls"]
+
+    partner_entry = next(d for d in filtered["other"] if d["domain"] == "example-partner.org")
+    assert "com.example.app" in partner_entry["referencing_packages"]
+    assert "http://www.example-partner.org" in partner_entry["urls"]
+
+
+def test_filter_manifest_data_context():
+    """_filter_manifest_data exports target_sdk_version and uses_cleartext_traffic."""
+    scan_report = {
+        "apk_metadata": {
+            "target_sdk_version": "36",
+        },
+        "manifest_audit": {
+            "security_flags": {
+                "allow_backup": True,
+                "uses_cleartext_traffic": False,
+                "network_security_config_missing": True,
+            },
+        },
+        "signatures": {},
+    }
+    manifest_data, _sigs = _filter_scan_report(scan_report)
+    assert manifest_data["target_sdk_version"] == "36"
+    assert manifest_data["uses_cleartext_traffic"] is False
+    assert manifest_data["security_flags"]["allow_backup"] is True
+    assert manifest_data["security_flags"]["network_security_config_missing"] is True
 
 
 def test_filter_network_data_caps_urls_per_domain():
@@ -2308,10 +2363,10 @@ def test_assemble_app_context_grounding_and_fallbacks():
     falling back cleanly to local metadata when store metadata is missing."""
     from scanner.util.ai_report import _assemble_app_context
 
-    store = {"name": "Adobe Scan", "developer": "Adobe Inc.", "description": "Pocket scanner."}
-    parsed = _assemble_app_context({}, store, "Adobe Scan APK", "com.adobe.scan.android", "1.0")
-    assert parsed["app_name"] == "Adobe Scan"
-    assert parsed["developer"] == "Adobe Inc."
+    store = {"name": "Sample Scanner", "developer": "Sample Inc.", "description": "Pocket scanner."}
+    parsed = _assemble_app_context({}, store, "Sample Scanner APK", "com.example.scanner", "1.0")
+    assert parsed["app_name"] == "Sample Scanner"
+    assert parsed["developer"] == "Sample Inc."
     assert parsed["description"] == "Pocket scanner."
 
     # Fallback to local package details when store metadata is None

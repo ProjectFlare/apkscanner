@@ -7,7 +7,7 @@ import re
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
-from scanner.util.rules import SCHEMA_KEYWORDS
+from scanner.util.rules import DECOMPRESSION_DICTIONARY_PACKAGES, SCHEMA_KEYWORDS
 
 # Pre-compiled URL regex patterns outside extraction loops to maximize execution speed
 _HTTP_RE = re.compile(r"https?://(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?::\d+)?(?:/[^\s\"'>]*)?")
@@ -30,10 +30,22 @@ def _clean_and_filter_url(url: str) -> str | None:
     if any(k in url_clean for k in SCHEMA_KEYWORDS):
         return None
 
-    # Normalize host-only URLs by removing the trailing slash
+    # Validate hostname structure and normalize host-only URLs
     if url_clean:
         try:
-            parsed = urlparse(url_clean)
+            parse_target = url_clean if "://" in url_clean else f"//{url_clean}"
+            parsed = urlparse(parse_target)
+            hostname = parsed.hostname
+            if hostname:
+                labels = hostname.split(".")
+                # RFC 1035: Label length cannot exceed 63 characters
+                if any(len(label) > 63 for label in labels):
+                    return None
+                # Reject malformed hostnames like 'www.icon' where 'www' is directly followed
+                # by a single label without a valid second-level domain name.
+                if len(labels) == 2 and labels[0].lower() == "www":
+                    return None
+
             if parsed.scheme in ("http", "https") and parsed.path == "/":
                 url_clean = urlunparse(parsed._replace(path=""))
         except Exception:
@@ -147,11 +159,17 @@ def _scan_string_pool(dx: Any, attributed_urls: dict[str, set[str]]) -> None:
                 try:
                     class_anal = xref[0]
                     pkg = _get_package_context(class_anal.name)
+                    # Skip cross-references originating from decompression dictionary packages (e.g. org.brotli.dec)
+                    if any(pkg.startswith(p) for p in DECOMPRESSION_DICTIONARY_PACKAGES):
+                        continue
                     owners.add(pkg)
                 except Exception:
                     owners.add("unresolved.context")
         else:
             owners.add("unreferenced.static_pool")
+
+        if not owners:
+            continue
 
         final_matches = _filter_and_deduplicate_urls(matches)
 
@@ -183,6 +201,10 @@ def _scan_class_annotations(dx: Any, attributed_urls: dict[str, set[str]]) -> No
                 continue
 
             pkg = _get_package_context(cls.name)
+            # Skip classes from decompression dictionary packages
+            if any(pkg.startswith(p) for p in DECOMPRESSION_DICTIONARY_PACKAGES):
+                continue
+
             ann_string = str(annotations)
             matches = _HTTP_RE.findall(ann_string) + _PATH_RE.findall(ann_string)
 

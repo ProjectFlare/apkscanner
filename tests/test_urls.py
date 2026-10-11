@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
-from scanner.scan_modules.urls import extract_urls
+from scanner.scan_modules.urls import _clean_and_filter_url, extract_urls
 
 
 def test_extract_urls():
@@ -194,3 +194,60 @@ def test_extract_urls_edge_cases():
         result_err = extract_urls(mock_dx_err)
         assert "unreferenced.static_pool" in result_err
         assert "https://trigger-error.com" in result_err["unreferenced.static_pool"]
+
+
+def test_extract_urls_decompression_dictionary_packages_filtered():
+    """Verifies that URLs referenced only by decompression dictionary packages are skipped."""
+    mock_brotli_class = MagicMock()
+    mock_brotli_class.name = "Lorg/brotli/dec/Dictionary;"
+
+    # String referenced exclusively by Brotli
+    mock_str_brotli = MagicMock()
+    mock_str_brotli.get_value.return_value = "https://brotli-internal.example.com/test"
+    mock_str_brotli.get_xref_from.return_value = [(mock_brotli_class, 0)]
+
+    # String referenced by both Brotli and app code
+    mock_app_class = MagicMock()
+    mock_app_class.name = "Lcom/mycompany/app/Api;"
+    mock_str_shared = MagicMock()
+    mock_str_shared.get_value.return_value = "https://api.mycompany.com/endpoint"
+    mock_str_shared.get_xref_from.return_value = [(mock_brotli_class, 0), (mock_app_class, 0)]
+
+    # Class annotation in a Brotli dictionary class
+    mock_brotli_annotated_cls = MagicMock()
+    mock_brotli_annotated_cls.is_external.return_value = False
+    mock_brotli_annotated_cls.name = "Lorg/brotli/dec/BrotliDict;"
+    mock_vm_class = MagicMock()
+    mock_vm_class.get_annotations.return_value = ['@SomeAnn(value="https://annotation-in-brotli.com")']
+    mock_brotli_annotated_cls.get_vm_class.return_value = mock_vm_class
+
+    mock_dx = MagicMock()
+    mock_dx.get_strings.return_value = [mock_str_brotli, mock_str_shared]
+    mock_dx.get_classes.return_value = [mock_brotli_annotated_cls]
+
+    result = extract_urls(mock_dx)
+
+    # Brotli package must not be in attributed owners
+    assert "org.brotli.dec" not in result
+    assert "org.brotli" not in result
+    # Only the app package should be present, containing the shared URL
+    assert "com.mycompany.app" in result
+    assert "https://api.mycompany.com/endpoint" in result["com.mycompany.app"]
+    assert "https://brotli-internal.example.com/test" not in result.get("com.mycompany.app", [])
+
+
+def test_clean_and_filter_url_malformed_hostnames():
+    """Verifies that malformed hostnames, truncated dictionary fragments, and label length violations are filtered."""
+    # www.<single_word> fragments (Brotli dictionary artifacts)
+    assert _clean_and_filter_url("http://www.icon") is None
+    assert _clean_and_filter_url("http://www.css") is None
+    assert _clean_and_filter_url("https://www.recent") is None
+
+    # DNS label length exceeding RFC 1035 limit (63 characters)
+    long_label = "a" * 64
+    assert _clean_and_filter_url(f"https://{long_label}.com/path") is None
+
+    # Legitimate domains must pass
+    assert _clean_and_filter_url("https://www.sample-portal.org") == "https://www.sample-portal.org"
+    assert _clean_and_filter_url("https://my-backend.org/api/") == "https://my-backend.org/api/"
+    assert _clean_and_filter_url("my-backend.org/api") == "my-backend.org/api"

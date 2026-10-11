@@ -226,3 +226,43 @@ def test_signature_helpers():
     res_empty = audit_signatures([])
     assert res_empty["scheme_versions"] == []
     assert res_empty["v1_only_signature"] is False
+
+
+def test_audit_signatures_locates_base_apk_when_not_first():
+    """Verifies audit_signatures finds base_apk even when passed non-first in the list."""
+    mock_cert_base = MagicMock()
+    mock_cert_base.subject.human_friendly = "CN=App, O=Developer"
+    mock_cert_base.issuer.human_friendly = "CN=App, O=Developer"
+    mock_cert_base.serial_number = 123
+    mock_cert_base.sha256_fingerprint = "AA BB CC"
+    mock_cert_base.sha1_fingerprint = "DD EE"
+    mock_cert_base.signature_algo = "sha256"
+    mock_cert_base.hash_algo = "sha256"
+    mock_cert_base.self_signed = True
+
+    mock_apk_base = MagicMock()
+    mock_apk_base.is_signed_v1.return_value = False
+    mock_apk_base.is_signed_v2.return_value = True
+    mock_apk_base.is_signed_v3.return_value = True
+    mock_apk_base.get_certificates.return_value = [mock_cert_base]
+    mock_apk_base.filename = "base.apk"
+    base_xml = MagicMock()
+    base_xml.attrib = {}
+    mock_apk_base.get_android_manifest_xml.return_value = base_xml
+
+    mock_apk_split = MagicMock()
+    mock_apk_split.is_signed.return_value = True
+    mock_apk_split.is_signed_v1.return_value = True
+    mock_apk_split.is_signed_v2.return_value = True
+    mock_apk_split.is_signed_v3.return_value = True
+    mock_apk_split.get_certificates.return_value = [mock_cert_base]
+    mock_apk_split.filename = "split_config.de.apk"
+    split_xml = MagicMock()
+    split_xml.attrib = {"split": "config.de"}
+    mock_apk_split.get_android_manifest_xml.return_value = split_xml
+
+    # Pass split first
+    result = audit_signatures([mock_apk_split, mock_apk_base])
+    assert result["scheme_versions"] == ["v2", "v3"]
+    assert result["v1_only_signature"] is False
+    assert len(result["mismatched_splits"]) == 0

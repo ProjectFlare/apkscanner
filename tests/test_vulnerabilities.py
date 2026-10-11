@@ -213,7 +213,7 @@ def test_owasp_mapping_helpers():
     report_m5_universal = {
         "bytecode_audit": {
             "unsafe_webview_settings": [
-                "Class 'com.adobe.Viewer' in method 'init' calls setAllowUniversalAccessFromFileURLs while JavaScript is enabled."
+                "Class 'com.example.Viewer' in method 'init' calls setAllowUniversalAccessFromFileURLs while JavaScript is enabled."
             ],
         }
     }
@@ -225,7 +225,7 @@ def test_owasp_mapping_helpers():
     report_m5_local = {
         "bytecode_audit": {
             "unsafe_webview_settings": [
-                "Class 'com.flir.Help' in method 'init' calls setAllowFileAccess while JavaScript is enabled."
+                "Class 'com.example.Help' in method 'init' calls setAllowFileAccess while JavaScript is enabled."
             ],
         }
     }
@@ -384,8 +384,8 @@ def test_map_m4_cleartext_suppressed_when_cleartext_traffic_disabled():
             },
         },
         "network": {
-            "attributed_urls": {"com.adobe": ["http://help.adobe.com", "http://google.com"]},
-            "categorized_domains": {"other": ["help.adobe.com"]},
+            "attributed_urls": {"com.example.app": ["http://insecure.example.com", "http://example.org"]},
+            "categorized_domains": {"other": ["insecure.example.com"]},
         },
         "bytecode_audit": {"ssl_bypass": []},
     }
@@ -398,18 +398,18 @@ def test_map_m4_cleartext_suppressed_when_cleartext_traffic_disabled():
             "security_flags": {"uses_cleartext_traffic": False},
             "network_security_config": {
                 "global_cleartext": False,
-                "domain_cleartext_list": ["help.adobe.com"],
+                "domain_cleartext_list": ["insecure.example.com"],
                 "trusts_user_certs": False,
             },
         },
         "network": {
-            "attributed_urls": {"com.adobe": ["http://help.adobe.com", "http://google.com"]},
+            "attributed_urls": {"com.example.app": ["http://insecure.example.com", "http://example.org"]},
             "categorized_domains": {},
         },
         "bytecode_audit": {"ssl_bypass": []},
     }
     vulns_domain = _map_m4_communication(report_domain_allowed)
-    assert len(vulns_domain) == 2  # cleartext_traffic (for help.adobe.com) and net_domain_cleartext
+    assert len(vulns_domain) == 2  # cleartext_traffic (for insecure.example.com) and net_domain_cleartext
     titles = [v["title"] for v in vulns_domain]
     assert "Cleartext Traffic Allowed or Insecure Hosts" in titles
     assert "Domain-Specific Cleartext Traffic Permitted" in titles

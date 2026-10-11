@@ -5,12 +5,20 @@ Inspects native shared libraries (.so) and class namespace structures to determi
 
 from typing import Any
 
+from scanner.util.rules import (
+    REACT_NATIVE_BUNDLE_MARKERS,
+    REACT_NATIVE_CLASS_MARKERS,
+    REACT_NATIVE_SO_MARKERS,
+)
+
 
 def analyze_ui_framework(apks: Any, dx: Any) -> str:
     """Identifies the UI framework used to compile the application.
 
-    Inspects included native shared libraries (.so) across all APKs and class
-    package namespaces.
+    Inspects included native shared libraries (.so), bundle assets across all APKs,
+    and class package namespaces. Cross-platform frameworks (Flutter, React Native/Expo)
+    take precedence over native UI components (such as Jetpack Compose) that may be pulled
+    in transitively by native plugins or wrappers.
 
     Args:
         apks (APK or list): A single parsed APK object or list of split APK objects.
@@ -23,22 +31,48 @@ def analyze_ui_framework(apks: Any, dx: Any) -> str:
     if not isinstance(apks, list):
         apks = [apks]
 
+    all_files: set[str] = set()
     for apk in apks:
-        files = apk.get_files()
-        # Flutter applications bundle the libflutter engine library
-        if any("libflutter.so" in f for f in files):
-            return "Flutter"
+        try:
+            all_files.update(apk.get_files())
+        except Exception:
+            continue
 
-        # React Native applications bundle the libreactnativejni connector library
-        if any("libreactnativejni.so" in f for f in files):
-            return "React Native"
+    # 1. Flutter detection
+    # Flutter applications bundle libflutter.so engine or flutter assets
+    if any("libflutter.so" in f for f in all_files) or any(f.startswith("assets/flutter_assets") for f in all_files):
+        return "Flutter"
 
-    # Standard modern native applications using Jetpack Compose contain the compose UI components
-    for cls in dx.get_classes():
-        if "Landroidx/compose/" in cls.name:
-            return "Native (Jetpack Compose)"
+    # 2. React Native / Expo detection
+    # React Native bundles native libraries (modern libreactnative.so, legacy libreactnativejni.so,
+    # Hermes engine libhermes.so, or Expo core libexpo-modules-core.so) or the JavaScript asset bundle.
+    if any(any(lib in f for lib in REACT_NATIVE_SO_MARKERS) for f in all_files):
+        return "React Native"
 
-    # Default fallback to classic XML Android views
+    if any(any(f.endswith(marker) for marker in REACT_NATIVE_BUNDLE_MARKERS) for f in all_files):
+        return "React Native"
+
+    # Also check DEX bytecode for React Native framework classes
+    if dx is not None:
+        try:
+            for cls in dx.get_classes():
+                cls_name = getattr(cls, "name", "")
+                if any(marker in cls_name for marker in REACT_NATIVE_CLASS_MARKERS):
+                    return "React Native"
+        except Exception:
+            pass
+
+    # 3. Jetpack Compose detection (only for pure native apps, not cross-platform hosts)
+    if dx is not None:
+        try:
+            for cls in dx.get_classes():
+                cls_name = getattr(cls, "name", "")
+                if "Landroidx/compose/" in cls_name:
+                    return "Native (Jetpack Compose)"
+        except Exception:
+            pass
+
+    # 4. Default fallback to classic XML Android views
     return "Native (Standard Views)"
 
 

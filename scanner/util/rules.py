@@ -516,6 +516,29 @@ TRUSTED_CRYPTO_LIBRARIES = (
 # Common package substrings indicating security or cryptography utility libraries
 CRYPTO_PACKAGE_PATTERNS = (".cryptography.", ".crypto.", ".security.")
 
+# Package/namespace identifiers of compression or decompression libraries whose
+# internal static dictionaries contain concatenated word lists and web protocols
+# that produce false-positive URLs.
+DECOMPRESSION_DICTIONARY_PACKAGES = (
+    "org.brotli.dec",
+    "org.brotli",
+    "com.aayushatharva.brotli4j",
+)
+
+# Native shared library markers identifying React Native and Expo runtime engines
+REACT_NATIVE_SO_MARKERS = (
+    "libreactnative.so",
+    "libreactnativejni.so",
+    "libhermes.so",
+    "libexpo-modules-core.so",
+)
+
+# Asset and bundle filenames identifying React Native applications
+REACT_NATIVE_BUNDLE_MARKERS = ("index.android.bundle",)
+
+# Class package prefixes identifying React Native runtime classes in DEX bytecode
+REACT_NATIVE_CLASS_MARKERS = ("Lcom/facebook/react/",)
+
 # The minimum Android API level where Janus vulnerability (CVE-2017-13156) is fixed.
 # Apps with minSdkVersion >= JANUS_MIN_SECURE_SDK cannot be installed on Janus-vulnerable Android devices.
 JANUS_MIN_SECURE_SDK = 28

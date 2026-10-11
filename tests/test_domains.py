@@ -2,7 +2,19 @@
 
 from unittest import mock
 
-from scanner.scan_modules.domains import extract_domains, is_tracker_domain
+from scanner.scan_modules.domains import extract_domains, is_tracker_domain, normalize_domain_from_url
+
+
+def test_normalize_domain_from_url():
+    """Verifies normalize_domain_from_url handles schemes, userinfo, ports, www prefixes, and errors."""
+    assert normalize_domain_from_url("https://user:password@www.Example.COM:8080/path?q=1") == "example.com"
+    assert normalize_domain_from_url("http://www.sample-portal.com") == "sample-portal.com"
+    assert normalize_domain_from_url("www.sample-service.org/about") == "sample-service.org"
+    assert normalize_domain_from_url("https://subdomain.example-platform.net") == "subdomain.example-platform.net"
+    assert normalize_domain_from_url("localhost:3000") == "localhost"
+
+    with mock.patch("scanner.scan_modules.domains.urlparse", side_effect=Exception("error")):
+        assert normalize_domain_from_url("https://example.com") == ""
 
 
 def test_extract_domains():

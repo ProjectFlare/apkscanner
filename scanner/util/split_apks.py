@@ -135,7 +135,7 @@ def parse_split_apks(zip_path: str) -> tuple[APK, str, list[DEX], list[dict], li
         all_apks, split_apks_metadata = _calculate_metadata_and_load(apk_files)
         base_apk, base_apk_path = _find_base_apk(all_apks)
         dex_files = _extract_dex_files(all_apks)
-        apk_objects = [apk_obj for _, apk_obj in all_apks]
+        apk_objects = [base_apk] + [apk_obj for _, apk_obj in all_apks if apk_obj != base_apk]
 
         return base_apk, base_apk_path, dex_files, split_apks_metadata, apk_objects, temp_dir
 

@@ -173,6 +173,43 @@ def test_parse_split_apks_success(tmp_path):
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def test_parse_split_apks_places_base_apk_first(tmp_path):
+    """Verifies that parse_split_apks always places base_apk as the first item in apk_objects."""
+    zip_path = str(tmp_path / "bundle.zip")
+
+    mock_split_apk = MagicMock()
+    mock_split_xml = MagicMock()
+    mock_split_xml.attrib = {"split": "config.arm64"}
+    mock_split_apk.get_android_manifest_xml.return_value = mock_split_xml
+    mock_split_apk.get_files.return_value = []
+
+    mock_base_apk = MagicMock()
+    mock_base_xml = MagicMock()
+    mock_base_xml.attrib = {}
+    mock_base_apk.get_android_manifest_xml.return_value = mock_base_xml
+    mock_base_apk.get_files.return_value = []
+
+    with (
+        patch("scanner.util.split_apks._extract_and_find_apks", return_value=["/tmp/split.apk", "/tmp/base.apk"]),
+        patch(
+            "scanner.util.split_apks._calculate_metadata_and_load",
+            return_value=(
+                [("/tmp/split.apk", mock_split_apk), ("/tmp/base.apk", mock_base_apk)],
+                [{"name": "split.apk"}, {"name": "base.apk"}],
+            ),
+        ),
+        patch("scanner.util.split_apks.DEX", return_value=MagicMock()),
+    ):
+        base_apk, _, _, _, objects, temp_dir = parse_split_apks(zip_path)
+        assert base_apk is mock_base_apk
+        assert objects[0] is mock_base_apk
+        assert objects[1] is mock_split_apk
+
+        import shutil
+
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 def test_parse_split_apks_value_error(tmp_path):
     """Verifies that parse_split_apks raises ValueError if no APKs are found."""
     zip_path = str(tmp_path / "bundle.zip")

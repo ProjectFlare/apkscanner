@@ -7,7 +7,7 @@ their metadata names and origin sources.
 import xml.etree.ElementTree as ET
 from typing import Any
 
-from scanner.util.rules import SECRETS_PATTERNS
+from scanner.util.rules import SECRETS_PATTERNS, TRUSTED_CRYPTO_LIBRARIES
 
 # File extensions recognized as text or structured configuration files
 _TEXT_EXTENSIONS: tuple[str, ...] = (
@@ -54,6 +54,11 @@ def _scan_dex_strings(dx: Any) -> list[dict[str, str]]:
                     if class_name.startswith("L") and class_name.endswith(";"):
                         class_name = class_name[1:-1].replace("/", ".")
                     xrefs.append(f"{class_name}->{method_ana.name}")
+
+                # Skip matches whose references originate exclusively from trusted cryptography
+                # provider libraries (e.g. Bouncy Castle curves, S-boxes, or DRBG test vectors).
+                if xrefs and all(any(lib in xref.lower() for lib in TRUSTED_CRYPTO_LIBRARIES) for xref in xrefs):
+                    continue
 
                 source = ", ".join(xrefs) if xrefs else "DEX String Pool"
                 secrets.append(

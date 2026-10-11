@@ -122,3 +122,34 @@ def test_extract_secrets_file_exception():
     result = extract_secrets(mock_dx, apks=mock_apk)
     assert len(result) == 1
     assert result[0]["type"] == "google_api"
+
+
+def test_extract_secrets_trusted_crypto_libraries_filtered():
+    """Verifies that secrets originating exclusively from trusted crypto libraries are filtered."""
+    hex_val = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+    # String referenced exclusively by Bouncy Castle (e.g. elliptic curve parameter)
+    mock_bc_class = MagicMock()
+    mock_bc_class.name = "Lorg/bouncycastle/math/ec/custom/sec/SecP256R1Curve;"
+    mock_bc_method = MagicMock()
+    mock_bc_method.name = "init"
+    mock_string_bc = MagicMock()
+    mock_string_bc.get_value.return_value = hex_val
+    mock_string_bc.get_xref_from.return_value = [(mock_bc_class, mock_bc_method)]
+
+    # String referenced by both Bouncy Castle and app class (legitimate hardcoded app secret)
+    mock_app_class = MagicMock()
+    mock_app_class.name = "Lcom/example/app/CryptoHelper;"
+    mock_app_method = MagicMock()
+    mock_app_method.name = "getKey"
+    mock_string_app = MagicMock()
+    mock_string_app.get_value.return_value = hex_val
+    mock_string_app.get_xref_from.return_value = [(mock_bc_class, mock_bc_method), (mock_app_class, mock_app_method)]
+
+    mock_dx = MagicMock()
+    mock_dx.get_strings.return_value = [mock_string_bc, mock_string_app]
+
+    result = extract_secrets(mock_dx)
+    assert len(result) == 1
+    assert result[0]["type"] == "aes_hex_key"
+    assert "com.example.app.CryptoHelper->getKey" in result[0]["source"]

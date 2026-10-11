@@ -36,7 +36,7 @@ def is_tracker_domain(domain: str) -> bool:
             return True
 
     # 2. Match against fallback keywords, checking exact domain segments
-    # to avoid false positives (e.g. keyword 'sync' matching 'carsync.de')
+    # to avoid false positives (e.g. keyword 'sync' matching 'mysync.example.com')
     segments = domain.split(".")
     domain_lower = domain.lower()
     for kw in TRACKER_KEYWORDS:
@@ -53,6 +53,32 @@ def is_tracker_domain(domain: str) -> bool:
             return True
 
     return False
+
+
+def normalize_domain_from_url(url: str) -> str:
+    """Extracts a normalized hostname/domain from a URL string.
+
+    Strips schemes, authentication credentials, port numbers, and leading 'www.' prefixes,
+    returning a clean lowercase domain name.
+
+    Args:
+        url (str): The URL or host string to normalize.
+
+    Returns:
+        str: Normalized domain name in lowercase, or empty string on failure.
+    """
+    parse_url = url if url.startswith(("http://", "https://")) else f"http://{url}"
+    try:
+        netloc = urlparse(parse_url).netloc
+        if "@" in netloc:
+            netloc = netloc.split("@")[-1]
+        if ":" in netloc:
+            netloc = netloc.split(":")[0]
+        if netloc.startswith("www."):
+            netloc = netloc[4:]
+        return netloc.lower()
+    except Exception:
+        return ""
 
 
 def extract_domains(attributed_urls: dict[str, list[str]]) -> dict[str, list[str]]:
@@ -75,19 +101,9 @@ def extract_domains(attributed_urls: dict[str, list[str]]) -> dict[str, list[str
 
     for url_list in attributed_urls.values():
         for url in url_list:
-            parse_url = url if url.startswith(("http://", "https://")) else f"http://{url}"
-            try:
-                netloc = urlparse(parse_url).netloc
-                if "@" in netloc:
-                    netloc = netloc.split("@")[-1]
-                if ":" in netloc:
-                    netloc = netloc.split(":")[0]
-                if netloc.startswith("www."):
-                    netloc = netloc[4:]
-                if netloc:
-                    domains.add(netloc.lower())
-            except Exception:
-                pass
+            domain = normalize_domain_from_url(url)
+            if domain:
+                domains.add(domain)
 
     categorized_domains: dict[str, list[str]] = {"cloud_services": [], "trackers_and_ads": [], "other": []}
 

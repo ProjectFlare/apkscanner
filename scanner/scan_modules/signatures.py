@@ -123,7 +123,8 @@ def _audit_split_alignment(apks: Sequence[Any], base_apk: Any) -> list[str]:
     except Exception as e:
         logger.warning(f"Failed to extract base APK certificate fingerprints: {e!s}")
 
-    for i, split_apk in enumerate(apks[1:]):
+    splits = [apk for apk in apks if apk != base_apk]
+    for i, split_apk in enumerate(splits):
         split_name = getattr(split_apk, "filename", None)
         if split_name:
             split_name = os.path.basename(split_name)
@@ -190,8 +191,19 @@ def audit_signatures(apks: Any) -> dict[str, Any]:
     if not apks:
         return report
 
-    # Enforce signature verification on the base APK (usually the first object)
+    # Enforce signature verification on the base APK
     base_apk = apks[0]
+    for apk in apks:
+        try:
+            xml_root = apk.get_android_manifest_xml()
+            if xml_root is not None and "split" not in xml_root.attrib:
+                base_apk = apk
+                break
+            if "base.apk" in getattr(apk, "filename", "").lower():
+                base_apk = apk
+                break
+        except Exception:
+            pass
 
     # Audit signature schemes
     if base_apk.is_signed_v1():

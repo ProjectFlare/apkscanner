@@ -17,6 +17,9 @@ from scanner.util.rules import (
     NEWS_SOURCE_DOMAINS,
     OBFUSCATED_SUBMODULE,
     PACKER_SIGNATURES,
+    REACT_NATIVE_BUNDLE_MARKERS,
+    REACT_NATIVE_CLASS_MARKERS,
+    REACT_NATIVE_SO_MARKERS,
     ROOT_STRINGS,
     RUNTIME_PERMISSIONS,
     SCHEMA_KEYWORDS,
@@ -50,6 +53,9 @@ def test_rules_constants_integrity():
     assert "java.lang" in DEOBFUSCATOR_IGNORED_PKG_PREFIXES
     assert "/system/bin/su" in ROOT_STRINGS
     assert "Qihoo 360 / Jiagu" in PACKER_SIGNATURES
+    assert "libreactnative.so" in REACT_NATIVE_SO_MARKERS
+    assert "index.android.bundle" in REACT_NATIVE_BUNDLE_MARKERS
+    assert "Lcom/facebook/react/" in REACT_NATIVE_CLASS_MARKERS
     assert "hardcoded_secrets" in MASVS_RULES
     assert MASVS_RULES["hardcoded_secrets"]["masvs_id"] == "MASVS-STORAGE-1"
     assert MASVS_RULES["hardcoded_secrets"]["default_severity"] == "INFORMATIONAL"

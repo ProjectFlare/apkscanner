@@ -66,7 +66,7 @@ SECRETS_SCHEMA = (
     "    }\n"
     "  ]\n"
     "}\n"
-    'If there are no secrets, output: {"no_findings": true, "findings": []}'
+    'If there are no secrets (or all candidates are public constants / false positives), output: {"no_findings": true, "findings": []}'
 )
 
 SIGNATURES_SCHEMA = (
@@ -240,7 +240,9 @@ SECRETS_PROMPT_TEMPLATE = (
     "- Each item in the findings represents a detected secret or a consolidated group of keys sharing the same origin or variable name.\n"
     "- Evaluate each item as a single consolidated assessment covering all associated values and locations.\n"
     "- In the 'risk' field, state the Action-First severity verdict and print all exact unmasked values.\n"
-    "- Detail the attack vector, developer intent, and server-side remediation steps.\n\n" + SECRETS_SCHEMA
+    "- Detail the attack vector, developer intent, and server-side remediation steps.\n"
+    '- If a finding candidate is determined to be a public constant, standard cryptographic domain parameter (such as elliptic curve coordinates, generator points, S-boxes, or DRBG test vectors), or false positive rather than an actionable secret, omit it from \'findings\'. If all candidate items are false positives or public constants, output: {"no_findings": true, "findings": []}.\n\n'
+    + SECRETS_SCHEMA
 )
 
 NETWORK_PROMPT_TEMPLATE = (
@@ -298,6 +300,7 @@ MANIFEST_AUDIT_GUIDELINES = (
     "- For allowBackup: state exposure conditionally unless private storage data findings exist. "
     "It does not expose Keystore keys or biometric data, which are system-managed. "
     "Note android:fullBackupContent or android:dataExtractionRules scoping.\n"
+    "- Consider target_sdk_version and uses_cleartext_traffic: on API 28+ (Android 9+), cleartext HTTP traffic is disabled by default.\n"
     "- Do not invent generic findings or report positive security flags as issues."
 )
 

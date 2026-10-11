@@ -75,6 +75,15 @@ def test_manifest_guidelines_ground_allowbackup_claims():
     assert "fullbackupcontent" in lowered or "dataextractionrules" in lowered
 
 
+def test_manifest_guidelines_ground_cleartext_traffic_claims():
+    """Manifest guidelines must ground cleartext traffic claims on API 28+ platform defaults."""
+    lowered = MANIFEST_AUDIT_GUIDELINES.lower()
+    assert "api 28+" in lowered
+    assert "cleartext" in lowered
+    assert "target_sdk_version" in lowered
+    assert "uses_cleartext_traffic" in lowered
+
+
 def test_findings_schema_risk_is_evidence_grounded():
     """The risk/attack_vector fields must forbid asserting specific unverified secrets."""
     lowered = FINDINGS_SCHEMA.lower()
@@ -229,3 +238,13 @@ def test_informational_schema_and_guidelines_request_all_evidence():
 
     assert "All exact artifacts" in INFORMATIONAL_SCHEMA
     assert "never truncate" in INFORMATIONAL_GUIDELINES
+
+
+def test_secrets_prompt_and_schema_allow_exit_for_public_constants():
+    """Secrets prompt and schema instruct the model to omit public constants and allow no_findings exit."""
+    from scanner.util.ai_prompt_templates import SECRETS_PROMPT_TEMPLATE, SECRETS_SCHEMA
+
+    assert "public constant" in SECRETS_PROMPT_TEMPLATE
+    assert "omit it from 'findings'" in SECRETS_PROMPT_TEMPLATE
+    assert '{"no_findings": true, "findings": []}' in SECRETS_PROMPT_TEMPLATE
+    assert '{"no_findings": true, "findings": []}' in SECRETS_SCHEMA

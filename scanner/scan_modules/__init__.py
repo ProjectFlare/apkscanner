@@ -15,7 +15,7 @@ from scanner.scan_modules.dependencies import (
     flatten_third_party,
     resolve_latest_versions,
 )
-from scanner.scan_modules.domains import extract_domains, is_tracker_domain
+from scanner.scan_modules.domains import extract_domains, is_tracker_domain, normalize_domain_from_url
 from scanner.scan_modules.manifest import (
     analyze_manifest_security,
     parse_network_security_config,
@@ -51,6 +51,7 @@ __all__ = [
     "flatten_for_osv",
     "flatten_third_party",
     "is_tracker_domain",
+    "normalize_domain_from_url",
     "parse_network_security_config",
     "resolve_latest_versions",
     "resolve_maven_coordinate",

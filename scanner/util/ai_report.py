@@ -33,6 +33,7 @@ from scanner.models.ai_report import (
     clean_code_snippet,
 )
 from scanner.scan_modules.dependencies import find_unversioned_third_party
+from scanner.scan_modules.domains import normalize_domain_from_url
 from scanner.util.ai_prompt_templates import (
     APP_CONTEXT_PROMPT_TEMPLATE,
     APP_CONTEXT_SCHEMA,
@@ -1284,6 +1285,11 @@ def _filter_scan_report(scan_report: dict) -> tuple[dict, dict]:
         if filtered_flags:
             filtered_manifest["security_flags"] = filtered_flags
 
+        if target_sdk := scan_report.get("apk_metadata", {}).get("target_sdk_version"):
+            filtered_manifest["target_sdk_version"] = target_sdk
+        if "uses_cleartext_traffic" in sec_flags:
+            filtered_manifest["uses_cleartext_traffic"] = sec_flags["uses_cleartext_traffic"]
+
         net_config = manifest_audit.get("network_security_config", {})
         filtered_net = {}
         if net_config:
@@ -1382,9 +1388,7 @@ def _filter_network_data(network: dict) -> dict:
 
     for pkg, urls in attributed.items():
         for url in urls:
-            temp_url = url if "://" in url else f"https://{url}"
-            parsed = urllib.parse.urlparse(temp_url)
-            domain = (parsed.netloc or parsed.path.split("/")[0]).split(":")[0]
+            domain = normalize_domain_from_url(url)
             if domain:
                 info = domain_to_info.setdefault(domain, {"packages": {}, "urls": {}})
                 info["packages"][pkg] = None
@@ -1395,7 +1399,23 @@ def _filter_network_data(network: dict) -> dict:
         for d in domains:
             if _is_ignored(d):
                 continue
-            info = domain_to_info.get(d, {"packages": {}, "urls": {}})
+            d_norm = normalize_domain_from_url(d) or d.lower().strip()
+            info = domain_to_info.get(d_norm)
+            if not info and d != d_norm:
+                info = domain_to_info.get(d)
+            if not info:
+                # Fallback: check matching subdomains or prefix variations
+                for cand_domain, cand_info in domain_to_info.items():
+                    if (
+                        cand_domain == d_norm
+                        or cand_domain.endswith(f".{d_norm}")
+                        or d_norm.endswith(f".{cand_domain}")
+                    ):
+                        info = cand_info
+                        break
+            if not info:
+                info = {"packages": {}, "urls": {}}
+
             kept, dropped = _sample_domain_urls(list(info["urls"]))
             entry = {"domain": d, "urls": kept, "referencing_packages": list(info["packages"])}
             if dropped:
